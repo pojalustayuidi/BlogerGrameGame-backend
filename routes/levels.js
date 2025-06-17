@@ -19,4 +19,8 @@ router.get('/:id', (req, res) => {
   res.json(level);
 });
 
+router.get('/count/all', (req, res) => {
+  res.json({ count: levels.length });
+});
+
 module.exports = router;
