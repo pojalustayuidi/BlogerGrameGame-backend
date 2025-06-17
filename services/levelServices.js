@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const filePath = path.join(__dirname, '../data/levels/levels.json');
+const filePath = path.join(__dirname, '../data/levels/level.json');
 console.log('📁 levelServices: __dirname =', __dirname);
 console.log('📁 levelServices: filePath =', filePath);
 console.log('📁 levelServices: existsSync =', fs.existsSync(filePath));
