@@ -2,11 +2,20 @@ const fs = require('fs');
 const path = require('path');
 
 const filePath = path.join(__dirname, '../data/levels/levels.json');
+console.log('📁 levelServices: __dirname =', __dirname);
+console.log('📁 levelServices: filePath =', filePath);
+console.log('📁 levelServices: existsSync =', fs.existsSync(filePath));
 
 function readLevels() {
-  const data = fs.readFileSync(filePath, 'utf-8');
-  return JSON.parse(data);
+  try {
+    const data = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('❌ Ошибка чтения levels.json:', err);
+    throw err;
+  }
 }
+
 
 function writeLevels(levels) {
   fs.writeFileSync(filePath, JSON.stringify(levels, null, 2), 'utf-8');
