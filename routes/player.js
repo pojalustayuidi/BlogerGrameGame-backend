@@ -1,33 +1,25 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const pool = require('../db'); // подключаем базу
 
 const router = express.Router();
 
-const playersFile = path.join(__dirname, '../data/players.json');
-
-// Регистрация нового игрока
-router.post('/register', (req, res) => {
+// POST /player/register
+router.post('/register', async (req, res) => {
   const playerId = uuidv4();
 
-  const playerData = {
-    id: playerId,
-    points: 0,
-    lives: 5,
-    progress: [],
-  };
+  try {
+    // Вставляем игрока в таблицу players
+    await pool.query(
+      'INSERT INTO players (id, created_at) VALUES ($1, NOW())',
+      [playerId]
+    );
 
-  let players = [];
-  if (fs.existsSync(playersFile)) {
-    const raw = fs.readFileSync(playersFile);
-    players = JSON.parse(raw);
+    res.status(201).json({ playerId });
+  } catch (err) {
+    console.error('Ошибка при регистрации игрока:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
   }
-
-  players.push(playerData);
-  fs.writeFileSync(playersFile, JSON.stringify(players, null, 2));
-
-  res.status(201).json({ playerId });
 });
 
-module.exports = router; // ⚠️ обязательно должен экспортироваться router
+module.exports = router;
