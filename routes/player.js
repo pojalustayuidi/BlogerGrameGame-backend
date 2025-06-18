@@ -99,5 +99,60 @@ router.get('/:id/progress', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+router.post('/:id/update', async (req, res) => {
+  const { id } = req.params;
+  const { points, lives } = req.body;
+
+  if (points === undefined && lives === undefined) {
+    return res.status(400).json({ error: 'Нужно передать points и/или lives' });
+  }
+
+  try {
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    if (points !== undefined) {
+      fields.push(`points = $${index++}`);
+      values.push(points);
+    }
+
+    if (lives !== undefined) {
+      fields.push(`lives = $${index++}`);
+      values.push(lives);
+    }
+
+    values.push(id); // последний аргумент — id
+
+    const query = `UPDATE players SET ${fields.join(', ')} WHERE id = $${index}`;
+    await pool.query(query, values);
+
+    res.status(200).json({ message: 'Данные обновлены' });
+  } catch (err) {
+    console.error('Ошибка при обновлении очков/жизней:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ✅ Получение очков и жизней игрока
+router.get('/:id/status', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      'SELECT points, lives FROM players WHERE id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Игрок не найден' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Ошибка при получении очков/жизней:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
 
 module.exports = router;
