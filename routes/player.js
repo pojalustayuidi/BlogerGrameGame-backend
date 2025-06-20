@@ -8,9 +8,10 @@ router.post('/register', async (req, res) => {
   const id = uuidv4();
   try {
     await pool.query(
-      'INSERT INTO players (id, created_at, progress) VALUES ($1, NOW(), $2)',
-      [id, []]
-    );
+  'INSERT INTO players (id, created_at, coins, lives) VALUES ($1, NOW(), $2, $3)',
+  [id, 0, 5]
+);
+
     res.status(201).json({ playerId: id });
   } catch (err) {
     console.error('Ошибка при регистрации:', err);
