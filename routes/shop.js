@@ -1,21 +1,3 @@
-const express = require('express');
-const router = express.Router();
-const pool = require('../db');
-
-
-// Получение списка товаров
-// Получение списка товаров из базы
-router.get('/items', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM shop_items ORDER BY cost ASC');
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Ошибка при получении товаров:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Совершение покупки
 router.post('/buy', async (req, res) => {
   const { playerId, itemId } = req.body;
 
@@ -55,7 +37,25 @@ router.post('/buy', async (req, res) => {
       return res.status(400).json({ error: 'Максимум жизней достигнут' });
     }
 
-    // Здесь продолжай логику покупки: списание монет, добавление жизни или подсказки и т.п.
+    // Списание монет
+    await client.query(
+      'UPDATE players SET coins = coins - $1 WHERE id = $2',
+      [item.cost, playerId]
+    );
+
+    // Добавление жизни (если покупаем жизнь)
+    if (item.type === 'life') {
+      await client.query(
+        'UPDATE players SET lives = lives + 1 WHERE id = $1',
+        [playerId]
+      );
+    }
+
+    // Запись истории покупки
+    await client.query(
+      'INSERT INTO shop_purchases (player_id, item_id, item_name, cost, purchased_at) VALUES ($1, $2, $3, $4, NOW())',
+      [playerId, item.id, item.name, item.cost]
+    );
 
     await client.query('COMMIT');
     res.json({ success: true, message: 'Покупка успешна' });
@@ -67,22 +67,3 @@ router.post('/buy', async (req, res) => {
     if (client) client.release();
   }
 });
-
-// Получение истории покупок игрока
-router.get('/history/:playerId', async (req, res) => {
-  const { playerId } = req.params;
-
-  try {
-    const result = await pool.query(
-      'SELECT item_id, item_name, cost, purchased_at FROM shop_purchases WHERE player_id = $1 ORDER BY purchased_at DESC',
-      [playerId]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Ошибка при получении истории покупок:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-module.exports = router;
