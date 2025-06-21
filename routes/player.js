@@ -8,9 +8,9 @@ router.post('/register', async (req, res) => {
   const id = uuidv4();
   try {
     await pool.query(
-  'INSERT INTO players (id, created_at, coins, lives) VALUES ($1, NOW(), $2, $3)',
-  [id, 0, 5]
-);
+      'INSERT INTO players (id, created_at, coins, lives) VALUES ($1, NOW(), $2, $3)',
+      [id, 0, 5]
+    );
 
     res.status(201).json({ playerId: id });
   } catch (err) {
@@ -46,7 +46,7 @@ router.post('/:id/progress', async (req, res) => {
   try {
     await pool.query(`
       UPDATE players
-      SET progress = ARRAY(SELECT DISTINCT unnest(progress || $1::text[]))
+      SET progress = ARRAY(SELECT DISTINCT unnest(COALESCE(progress, '{}') || $1::text[]))
       WHERE id = $2
     `, [[levelId.toString()], id]);
 
@@ -100,6 +100,50 @@ router.get('/:id/progress', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
+// ✅ Транзакционное обновление массива прогресса и текущего уровня
+router.post('/:id/update-progress', async (req, res) => {
+  const { id } = req.params;
+  const { levelId } = req.body;
+
+  if (!levelId) {
+    return res.status(400).json({ error: 'levelId обязателен' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Обновляем progress в players
+    await client.query(`
+      UPDATE players
+      SET progress = ARRAY(
+        SELECT DISTINCT unnest(COALESCE(progress, '{}') || $1::text[])
+      )
+      WHERE id = $2
+    `, [[levelId.toString()], id]);
+
+    // Вставляем или обновляем текущий уровень в таблице progress
+    await client.query(`
+      INSERT INTO progress (player_id, current_level)
+      VALUES ($1, $2)
+      ON CONFLICT (player_id)
+      DO UPDATE SET current_level = $2, updated_at = CURRENT_TIMESTAMP
+    `, [id, levelId]);
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Прогресс обновлён' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Ошибка при обновлении прогресса:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    client.release();
+  }
+});
+
+// ✅ Обновление очков и жизней игрока
 router.post('/:id/update', async (req, res) => {
   const { id } = req.params;
   const { points, lives } = req.body;
@@ -123,7 +167,7 @@ router.post('/:id/update', async (req, res) => {
       values.push(lives);
     }
 
-    values.push(id); // последний аргумент — id
+    values.push(id);
 
     const query = `UPDATE players SET ${fields.join(', ')} WHERE id = $${index}`;
     await pool.query(query, values);
