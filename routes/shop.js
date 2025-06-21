@@ -4,10 +4,10 @@ const pool = require('../db');
 
 // Каталог товаров
 const shopItems = [
-  { id: 'hint', name: 'Подсказка', cost: 8 },
-  { id: 'hint3', name: '3 Подсказки (скидка)', cost: 20 },
-  { id: 'life', name: '1 Жизнь', cost: 15 },
-  { id: 'life5', name: '5 Жизней (скидка)', cost: 70 }
+  { id: 'hint', name: 'Подсказка', description: 'Открывает одну букву', cost: 8, type: 'hint' },
+  { id: 'hint3', name: '3 Подсказки (скидка)', description: 'Открывает три буквы', cost: 20, type: 'hint' },
+  { id: 'life', name: '1 Жизнь', description: 'Добавляет одну жизнь', cost: 15, type: 'life' },
+  { id: 'life5', name: '5 Жизней (скидка)', description: 'Добавляет пять жизней', cost: 70, type: 'life' }
 ];
 
 // Получение списка товаров
@@ -35,6 +35,7 @@ router.post('/buy', async (req, res) => {
 
     if (playerResult.rows.length === 0) {
       await client.query('ROLLBACK');
+      client.release();
       return res.status(404).json({ error: 'Игрок не найден' });
     }
 
@@ -42,16 +43,21 @@ router.post('/buy', async (req, res) => {
 
     if (player.coins < item.cost) {
       await client.query('ROLLBACK');
+      client.release();
       return res.status(400).json({ error: 'Недостаточно монет' });
     }
 
-    let newLives = player.lives;
+    if (item.type === 'life' && player.lives >= 5) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(400).json({ error: 'Максимум жизней достигнут' });
+    }
 
-    // Если покупка жизней
+    let newLives = player.lives;
     if (item.id === 'life') {
-      newLives += 1;
+      newLives = Math.min(player.lives + 1, 5);
     } else if (item.id === 'life5') {
-      newLives += 5;
+      newLives = Math.min(player.lives + 5, 5);
     }
 
     await client.query(
@@ -60,9 +66,12 @@ router.post('/buy', async (req, res) => {
     );
 
     await client.query('COMMIT');
+    client.release();
     res.json({ message: 'Покупка успешна', newCoins: player.coins - item.cost, newLives });
   } catch (err) {
     console.error('Ошибка при покупке:', err);
+    await client.query('ROLLBACK');
+    client.release();
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
