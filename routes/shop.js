@@ -1,3 +1,5 @@
+const { v4: uuidv4 } = require('uuid');
+
 router.post('/buy', async (req, res) => {
   const { playerId, itemId } = req.body;
 
@@ -6,7 +8,6 @@ router.post('/buy', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    // Получаем товар из базы
     const itemResult = await client.query('SELECT * FROM shop_items WHERE id = $1', [itemId]);
     if (itemResult.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -14,7 +15,6 @@ router.post('/buy', async (req, res) => {
     }
     const item = itemResult.rows[0];
 
-    // Получаем игрока с блокировкой
     const playerResult = await client.query(
       'SELECT coins, lives FROM players WHERE id = $1 FOR UPDATE',
       [playerId]
@@ -25,25 +25,23 @@ router.post('/buy', async (req, res) => {
     }
     const player = playerResult.rows[0];
 
-    // Проверяем монеты
     if (player.coins < item.cost) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Недостаточно монет' });
     }
 
-    // Проверяем жизни, если покупаем жизнь
     if (item.type === 'life' && player.lives >= 5) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Максимум жизней достигнут' });
     }
 
-    // Списание монет
+    // Списываем монеты
     await client.query(
       'UPDATE players SET coins = coins - $1 WHERE id = $2',
       [item.cost, playerId]
     );
 
-    // Добавление жизни (если покупаем жизнь)
+    // Добавляем жизнь, если item.type == 'life'
     if (item.type === 'life') {
       await client.query(
         'UPDATE players SET lives = lives + 1 WHERE id = $1',
@@ -51,10 +49,11 @@ router.post('/buy', async (req, res) => {
       );
     }
 
-    // Запись истории покупки
+    // Добавляем запись о покупке
+    const purchaseId = uuidv4();
     await client.query(
-      'INSERT INTO shop_purchases (player_id, item_id, item_name, cost, purchased_at) VALUES ($1, $2, $3, $4, NOW())',
-      [playerId, item.id, item.name, item.cost]
+      'INSERT INTO shop_purchases (id, player_id, item_id, purchased_at) VALUES ($1, $2, $3, NOW())',
+      [purchaseId, playerId, item.id]
     );
 
     await client.query('COMMIT');
