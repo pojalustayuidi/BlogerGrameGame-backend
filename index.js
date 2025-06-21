@@ -4,6 +4,7 @@ const path = require('path');
 const pool = require('./db'); // подключение к PostgreSQL
 const levelsRouter = require('./routes/levels');
 const playerRouter = require('./routes/player');
+const shopRouter = require('./routes/shop');
 
 const app = express();
 app.use(express.json());
@@ -17,6 +18,7 @@ pool.query(initSQL)
 // Маршруты
 app.use('/levels', levelsRouter);
 app.use('/player', playerRouter);
+app.use('/shop', shopRouter);
 
 // Заглушка для сохранения прогресса
 app.post('/progress', (req, res) => {
