@@ -12,6 +12,12 @@ router.post('/register', async (req, res) => {
       [id, 0, 5]
     );
 
+    // Создаем дефолтный прогресс с current_level = 1
+    await pool.query(
+      'INSERT INTO progress (player_id, current_level, updated_at) VALUES ($1, $2, NOW())',
+      [id, 1]
+    );
+
     res.status(201).json({ playerId: id });
   } catch (err) {
     console.error('Ошибка при регистрации:', err);
