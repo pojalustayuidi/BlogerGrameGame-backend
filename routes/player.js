@@ -149,13 +149,13 @@ router.post('/:id/update-progress', async (req, res) => {
   }
 });
 
-// ✅ Обновление очков и жизней игрока
+// ✅ Обновление очков (coins) и жизней игрока
 router.post('/:id/update', async (req, res) => {
   const { id } = req.params;
-  const { points, lives } = req.body;
+  const { coins, lives } = req.body;
 
-  if (points === undefined && lives === undefined) {
-    return res.status(400).json({ error: 'Нужно передать points и/или lives' });
+  if (coins === undefined && lives === undefined) {
+    return res.status(400).json({ error: 'Нужно передать coins и/или lives' });
   }
 
   try {
@@ -163,9 +163,9 @@ router.post('/:id/update', async (req, res) => {
     const values = [];
     let index = 1;
 
-    if (points !== undefined) {
-      fields.push(`points = $${index++}`);
-      values.push(points);
+    if (coins !== undefined) {
+      fields.push(`coins = $${index++}`);
+      values.push(coins);
     }
 
     if (lives !== undefined) {
@@ -185,13 +185,13 @@ router.post('/:id/update', async (req, res) => {
   }
 });
 
-// ✅ Получение очков и жизней игрока
+// ✅ Получение очков (coins) и жизней игрока
 router.get('/:id/status', async (req, res) => {
   const { id } = req.params;
 
   try {
     const result = await pool.query(
-      'SELECT points, lives FROM players WHERE id = $1',
+      'SELECT coins, lives FROM players WHERE id = $1',
       [id]
     );
 
