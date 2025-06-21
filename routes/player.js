@@ -205,5 +205,68 @@ router.get('/:id/status', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+// ♻️ Восстановление жизней (каждые 15 минут)
+router.post('/:id/refresh-lives', async (req, res) => {
+  const { id } = req.params;
 
+  try {
+    const result = await pool.query(
+      'SELECT lives, last_life_update FROM players WHERE id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Игрок не найден' });
+    }
+
+    let { lives, last_life_update } = result.rows[0];
+
+    if (lives >= 5) {
+      return res.json({ lives, message: 'Максимум жизней' });
+    }
+
+    const now = new Date();
+    const lastUpdate = new Date(last_life_update);
+    const minutesPassed = Math.floor((now - lastUpdate) / 1000 / 60);
+
+    if (minutesPassed < 15) {
+      return res.json({
+        lives,
+        minutesToNextLife: 15 - minutesPassed,
+        message: 'Жизни ещё не восстановлены'
+      });
+    }
+
+    const livesToRestore = Math.min(Math.floor(minutesPassed / 15), 5 - lives);
+    const newLives = lives + livesToRestore;
+    const newLastUpdate = new Date(lastUpdate.getTime() + livesToRestore * 15 * 60 * 1000);
+
+    await pool.query(
+      'UPDATE players SET lives = $1, last_life_update = $2 WHERE id = $3',
+      [newLives, newLastUpdate, id]
+    );
+
+    res.json({ lives: newLives, message: `Восстановлено ${livesToRestore} жизней` });
+
+  } catch (err) {
+    console.error('Ошибка при восстановлении жизней:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+  // Уменьшить жизни на 1 (если больше 0)
+router.post('/:id/decrement-lives', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      'UPDATE players SET lives = GREATEST(lives - 1, 0) WHERE id = $1 RETURNING lives',
+      [id]
+    );
+
+    res.json({ lives: result.rows[0].lives });
+  } catch (err) {
+    console.error('Ошибка при уменьшении жизней:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+});
 module.exports = router;
