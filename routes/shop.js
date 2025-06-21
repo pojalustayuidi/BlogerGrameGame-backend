@@ -4,8 +4,8 @@ const pool = require('../db');
 
 // Каталог товаров
 const shopItems = [
-  { id: 'hint', name: 'Подсказка', description: 'Открывает одну букву', cost: 8, type: 'hint' },
-  { id: 'hint3', name: '3 Подсказки (скидка)', description: 'Открывает три буквы', cost: 20, type: 'hint' },
+  { id: 'hint', name: 'Подсказка', description: 'Открывает одну букву', cost: 15, type: 'hint' },
+  { id: 'hint3', name: '3 Подсказки (скидка)', description: 'Открывает три буквы', cost: 40, type: 'hint' },
   { id: 'life', name: '1 Жизнь', description: 'Добавляет одну жизнь', cost: 15, type: 'life' },
   { id: 'life5', name: '5 Жизней (скидка)', description: 'Добавляет пять жизней', cost: 70, type: 'life' }
 ];
@@ -24,8 +24,9 @@ router.post('/buy', async (req, res) => {
     return res.status(400).json({ error: 'Товар не найден' });
   }
 
+  let client;
   try {
-    const client = await pool.connect();
+    client = await pool.connect();
     await client.query('BEGIN');
 
     const playerResult = await client.query(
@@ -35,7 +36,6 @@ router.post('/buy', async (req, res) => {
 
     if (playerResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      client.release();
       return res.status(404).json({ error: 'Игрок не найден' });
     }
 
@@ -43,13 +43,11 @@ router.post('/buy', async (req, res) => {
 
     if (player.coins < item.cost) {
       await client.query('ROLLBACK');
-      client.release();
       return res.status(400).json({ error: 'Недостаточно монет' });
     }
 
     if (item.type === 'life' && player.lives >= 5) {
       await client.query('ROLLBACK');
-      client.release();
       return res.status(400).json({ error: 'Максимум жизней достигнут' });
     }
 
@@ -65,13 +63,35 @@ router.post('/buy', async (req, res) => {
       [item.cost, newLives, playerId]
     );
 
+    await client.query(
+      'INSERT INTO shop_purchases (player_id, item_id, item_name, cost) VALUES ($1, $2, $3, $4)',
+      [playerId, item.id, item.name, item.cost]
+    );
+
     await client.query('COMMIT');
-    client.release();
     res.json({ message: 'Покупка успешна', newCoins: player.coins - item.cost, newLives });
   } catch (err) {
+    if (client) await client.query('ROLLBACK');
     console.error('Ошибка при покупке:', err);
-    await client.query('ROLLBACK');
-    client.release();
+    res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// Получение истории покупок игрока
+router.get('/history/:playerId', async (req, res) => {
+  const { playerId } = req.params;
+
+  try {
+    const result = await pool.query(
+      'SELECT item_id, item_name, cost, purchased_at FROM shop_purchases WHERE player_id = $1 ORDER BY purchased_at DESC',
+      [playerId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Ошибка при получении истории покупок:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
