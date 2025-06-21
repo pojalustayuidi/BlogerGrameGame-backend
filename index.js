@@ -5,7 +5,7 @@ const pool = require('./db'); // подключение к PostgreSQL
 const levelsRouter = require('./routes/levels');
 const playerRouter = require('./routes/player');
 const shopRouter = require('./routes/shop');
-
+const adminRoutes = require('./routes/admin');
 const app = express();
 app.use(express.json());
 
@@ -19,6 +19,7 @@ pool.query(initSQL)
 app.use('/levels', levelsRouter);
 app.use('/player', playerRouter);
 app.use('/shop', shopRouter);
+app.use('/admin', adminRoutes);
 
 // Заглушка для сохранения прогресса
 app.post('/progress', (req, res) => {
