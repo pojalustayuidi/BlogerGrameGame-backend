@@ -224,46 +224,50 @@ router.post('/:id/refresh-lives', async (req, res) => {
 
     let { lives, last_life_update } = result.rows[0];
 
-    if (lives >= 5) {
-      return res.json({ lives, message: 'Максимум жизней' });
-    }
-
     const now = new Date();
     const lastUpdate = last_life_update ? new Date(last_life_update) : now;
 
-    if (!last_life_update) {
-      // Если last_life_update отсутствует, устанавливаем текущее время
+    const minutesPassed = Math.floor((now - lastUpdate) / 1000 / 60);
+    let livesToRestore = 0;
+    let newLastUpdate = lastUpdate;
+
+    if (minutesPassed >= 15 && lives < 5) {
+      livesToRestore = Math.min(Math.floor(minutesPassed / 15), 5 - lives);
+      newLastUpdate = new Date(lastUpdate.getTime() + livesToRestore * 15 * 60 * 1000);
+      lives += livesToRestore;
+
+      await pool.query(
+        'UPDATE players SET lives = $1, last_life_update = $2 WHERE id = $3',
+        [lives, newLastUpdate, id]
+      );
+    } else if (minutesPassed >= 15 && lives >= 5) {
+      // Обновляем только last_life_update, чтобы сбросить ожидание
+      const missedLives = Math.floor(minutesPassed / 15);
+      newLastUpdate = new Date(lastUpdate.getTime() + missedLives * 15 * 60 * 1000);
+
       await pool.query(
         'UPDATE players SET last_life_update = $1 WHERE id = $2',
-        [now, id]
+        [newLastUpdate, id]
       );
     }
 
-    const minutesPassed = Math.floor((now - lastUpdate) / 1000 / 60);
+    const minutesToNextLife =
+      lives >= 5 ? null : 15 - ((now - newLastUpdate) / 1000 / 60).floor();
 
-    if (minutesPassed < 15) {
-      return res.json({
-        lives,
-        minutesToNextLife: 15 - minutesPassed,
-        message: 'Жизни ещё не восстановлены'
-      });
-    }
-
-    const livesToRestore = Math.min(Math.floor(minutesPassed / 15), 5 - lives);
-    const newLives = lives + livesToRestore;
-    const newLastUpdate = new Date(lastUpdate.getTime() + livesToRestore * 15 * 60 * 1000);
-
-    await pool.query(
-      'UPDATE players SET lives = $1, last_life_update = $2 WHERE id = $3',
-      [newLives, newLastUpdate, id]
-    );
-
-    res.json({ lives: newLives, message: `Восстановлено ${livesToRestore} жизней` });
+    res.json({
+      lives,
+      restored: livesToRestore,
+      minutesToNextLife,
+      message: livesToRestore > 0
+        ? `Восстановлено ${livesToRestore} жизней`
+        : 'Жизни не восстановлены',
+    });
   } catch (err) {
     console.error('Ошибка при восстановлении жизней:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
 
 // Уменьшить жизни на 1 (если больше 0)
 router.post('/:id/decrement-lives', async (req, res) => {
