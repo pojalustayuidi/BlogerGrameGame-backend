@@ -223,27 +223,27 @@ router.post('/:id/refresh-lives', async (req, res) => {
     }
 
     let { lives, last_life_update } = result.rows[0];
-
     const now = new Date();
     const lastUpdate = last_life_update ? new Date(last_life_update) : now;
 
-    const minutesPassed = Math.floor((now - lastUpdate) / 1000 / 60);
+    const secondsPassed = Math.floor((now - lastUpdate) / 1000);
+    const restoreIntervalSeconds = 15 * 60; // 15 минут в секундах
     let livesToRestore = 0;
     let newLastUpdate = lastUpdate;
 
-    if (minutesPassed >= 15 && lives < 5) {
-      livesToRestore = Math.min(Math.floor(minutesPassed / 15), 5 - lives);
-      newLastUpdate = new Date(lastUpdate.getTime() + livesToRestore * 15 * 60 * 1000);
+    if (secondsPassed >= restoreIntervalSeconds && lives < 5) {
+      livesToRestore = Math.min(Math.floor(secondsPassed / restoreIntervalSeconds), 5 - lives);
       lives += livesToRestore;
+      newLastUpdate = new Date(lastUpdate.getTime() + livesToRestore * restoreIntervalSeconds * 1000);
 
       await pool.query(
         'UPDATE players SET lives = $1, last_life_update = $2 WHERE id = $3',
         [lives, newLastUpdate, id]
       );
-    } else if (minutesPassed >= 15 && lives >= 5) {
-      // Обновляем только last_life_update, чтобы сбросить ожидание
-      const missedLives = Math.floor(minutesPassed / 15);
-      newLastUpdate = new Date(lastUpdate.getTime() + missedLives * 15 * 60 * 1000);
+    } else if (secondsPassed >= restoreIntervalSeconds && lives >= 5) {
+      // Сбрасываем last_life_update для следующего цикла
+      const missedIntervals = Math.floor(secondsPassed / restoreIntervalSeconds);
+      newLastUpdate = new Date(lastUpdate.getTime() + missedIntervals * restoreIntervalSeconds * 1000);
 
       await pool.query(
         'UPDATE players SET last_life_update = $1 WHERE id = $2',
@@ -251,16 +251,21 @@ router.post('/:id/refresh-lives', async (req, res) => {
       );
     }
 
-    const minutesToNextLife =
-      lives >= 5 ? null : 15 - ((now - newLastUpdate) / 1000 / 60).floor();
+    // Рассчитываем точное время до следующей жизни
+    const secondsToNextLife = lives >= 5 
+      ? 0 
+      : restoreIntervalSeconds - (secondsPassed % restoreIntervalSeconds);
 
     res.json({
       lives,
       restored: livesToRestore,
-      minutesToNextLife,
-      message: livesToRestore > 0
-        ? `Восстановлено ${livesToRestore} жизней`
-        : 'Жизни не восстановлены',
+      secondsToNextLife, // Возвращаем секунды до следующей жизни
+      lastLifeUpdate: newLastUpdate.toISOString(),
+      message: livesToRestore > 0 
+        ? `Восстановлено ${livesToRestore} жизней` 
+        : lives >= 5 
+          ? 'Все жизни восстановлены' 
+          : 'Жизни не восстановлены, время ожидания не истекло'
     });
   } catch (err) {
     console.error('Ошибка при восстановлении жизней:', err);
