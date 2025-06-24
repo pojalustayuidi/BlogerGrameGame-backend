@@ -15,6 +15,8 @@ router.get('/items', async (req, res) => {
 });
 
 // Совершение покупки
+// Совершение покупки
+// Совершение покупки
 router.post('/buy', async (req, res) => {
   const { playerId, itemId } = req.body;
 
@@ -48,23 +50,18 @@ router.post('/buy', async (req, res) => {
       return res.status(400).json({ error: 'Недостаточно монет' });
     }
 
-    // Если покупаем жизнь, проверяем максимум
-    if (item.type === 'life' && player.lives >= 5) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Максимум жизней достигнут' });
-    }
-
     // Списываем монеты
     const newCoins = player.coins - item.cost;
 
-    // Обновляем жизни, если куплена жизнь
+    // Обновляем жизни, если куплена жизнь (можно покупать сверх 5)
     let newLives = player.lives;
     if (item.type === 'life') {
-      newLives = Math.min(player.lives + 1, 5);
+      const amount = item.amount || 1;
+      newLives = player.lives + amount;
     }
 
     // Обновляем данные игрока
-    await client.query(
+    await client.query( 
       'UPDATE players SET coins = $1, lives = $2 WHERE id = $3',
       [newCoins, newLives, playerId]
     );
@@ -86,6 +83,8 @@ router.post('/buy', async (req, res) => {
     if (client) client.release();
   }
 });
+
+
 
 // Получение истории покупок игрока
 router.get('/history/:playerId', async (req, res) => {
