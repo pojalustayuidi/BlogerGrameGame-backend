@@ -109,10 +109,10 @@ router.get('/:id/progress', async (req, res) => {
 // Транзакционное обновление массива прогресса и текущего уровня
 router.post('/:id/update-progress', async (req, res) => {
   const { id } = req.params;
-  const { levelId } = req.body;
+  const { levelId, reward } = req.body;
 
-  if (!levelId) {
-    return res.status(400).json({ error: 'levelId обязателен' });
+  if (!levelId || reward === undefined) {
+    return res.status(400).json({ error: 'levelId и reward обязательны' });
   }
 
   const client = await pool.connect();
@@ -120,6 +120,36 @@ router.post('/:id/update-progress', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // Проверяем, пройден ли уровень ранее
+    const progressCheck = await client.query(
+      'SELECT progress FROM players WHERE id = $1',
+      [id]
+    );
+
+    if (progressCheck.rows.length === 0) {
+      throw new Error('Игрок не найден');
+    }
+
+    const currentProgress = progressCheck.rows[0].progress || [];
+    const isLevelCompleted = currentProgress.includes(levelId.toString());
+
+    let newCoins = 0;
+    if (!isLevelCompleted) {
+      // Начисляем награду, если уровень не пройден
+      const playerData = await client.query(
+        'SELECT coins FROM players WHERE id = $1',
+        [id]
+      );
+      const currentCoins = playerData.rows[0].coins || 0;
+      newCoins = currentCoins + reward;
+
+      await client.query(
+        'UPDATE players SET coins = $1 WHERE id = $2',
+        [newCoins, id]
+      );
+    }
+
+    // Обновляем прогресс (добавляем levelId в массив)
     await client.query(`
       UPDATE players
       SET progress = ARRAY(
@@ -128,6 +158,7 @@ router.post('/:id/update-progress', async (req, res) => {
       WHERE id = $2
     `, [[levelId.toString()], id]);
 
+    // Обновляем текущий уровень
     await client.query(`
       INSERT INTO progress (player_id, current_level)
       VALUES ($1, $2)
@@ -136,7 +167,11 @@ router.post('/:id/update-progress', async (req, res) => {
     `, [id, levelId]);
 
     await client.query('COMMIT');
-    res.status(200).json({ message: 'Прогресс обновлён' });
+    res.status(200).json({
+      message: 'Прогресс обновлён',
+      coinsAdded: isLevelCompleted ? 0 : reward,
+      newCoins: newCoins
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Ошибка при обновлении прогресса:', err);
@@ -207,6 +242,8 @@ router.get('/:id/status', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
+
 
 // Восстановление жизней (каждые 15 минут)
 router.post('/:id/refresh-lives', async (req, res) => {
