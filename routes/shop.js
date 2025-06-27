@@ -14,9 +14,7 @@ router.get('/items', async (req, res) => {
   }
 });
 
-// Совершение покупки
-// Совершение покупки
-// Совершение покупки
+
 router.post('/buy', async (req, res) => {
   const { playerId, itemId } = req.body;
 
@@ -25,15 +23,18 @@ router.post('/buy', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    // Получаем товар из базы
     const itemResult = await client.query('SELECT * FROM shop_items WHERE id = $1', [itemId]);
     if (itemResult.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Товар не найден' });
     }
     const item = itemResult.rows[0];
+    if (!item.type.startsWith('hint')) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Этот товар не является подсказкой' });
+    }
 
-    // Получаем игрока с блокировкой
+
     const playerResult = await client.query(
       'SELECT coins, lives FROM players WHERE id = $1 FOR UPDATE',
       [playerId]
@@ -51,6 +52,8 @@ router.post('/buy', async (req, res) => {
     }
 
     // Списываем монеты
+    const hintAmount = parseInt(item.type.replace('hint', '')) || 1;
+    const newHints = (player.hints || 0) + hintAmount;
     const newCoins = player.coins - item.cost;
 
     // Обновляем жизни, если куплена жизнь (можно покупать сверх 5)
@@ -63,7 +66,7 @@ router.post('/buy', async (req, res) => {
     // Обновляем данные игрока
     await client.query( 
       'UPDATE players SET coins = $1, lives = $2 WHERE id = $3',
-      [newCoins, newLives, playerId]
+      [newCoins, newLives, playerId, newHints]
     );
 
     // Добавляем запись в историю покупок
@@ -74,17 +77,84 @@ router.post('/buy', async (req, res) => {
     );
 
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Покупка успешна', newCoins, newLives });
+    res.json({ success: true, message: 'Покупка успешна', newCoins, newLives, newHints});
   } catch (err) {
     if (client) await client.query('ROLLBACK');
     console.error('Ошибка при покупке:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Ошибка сервера' });  
   } finally {
     if (client) client.release();
   }
 });
 
+router.get('/:playerId/hints', async (req, res) => {
+  const { playerId } = req.params;
+  
+  try {
+    const result = await pool.query(
+      'SELECT hints FROM players WHERE id = $1',
+      [playerId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Игрок не найден' });
+    }
+    
+    res.json({ 
+      hints: result.rows[0].hints || 0,
+      maxHints: 20 // Можно получать и из конфига
+    });
+  } catch (err) {
+    console.error('Ошибка при получении подсказок:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
 
+
+router.post('/:playerId/use-hint', async (req, res) => {
+  const { playerId } = req.params;
+  
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    
+    // Проверяем наличие подсказок
+    const result = await client.query(
+      'SELECT hints FROM players WHERE id = $1 FOR UPDATE',
+      [playerId]
+    );
+    
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Игрок не найден' });
+    }
+    
+    const currentHints = result.rows[0].hints || 0;
+    if (currentHints <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Нет доступных подсказок' });
+    }
+    
+    // Уменьшаем количество подсказок
+    await client.query(
+      'UPDATE players SET hints = hints - 1 WHERE id = $1',
+      [playerId]
+    );
+    
+    await client.query('COMMIT');
+    res.json({ 
+      success: true, 
+      remainingHints: currentHints - 1 
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK');
+    console.error('Ошибка при использовании подсказки:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    if (client) client.release();
+  }
+});
 
 // Получение истории покупок игрока
 router.get('/history/:playerId', async (req, res) => {

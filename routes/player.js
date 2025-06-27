@@ -328,4 +328,91 @@ router.post('/:id/decrement-lives', async (req, res) => {
   }
 });
 
+
+router.get('/:id/hints', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT hints FROM players WHERE id = $1', 
+      [id]
+    );
+    res.json({ hints: result.rows[0]?.hints || 0 });
+  } catch (err) {
+    console.error('Ошибка при получении подсказок:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Использование подсказки
+router.post('/:id/use-hint', async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+к
+    const check = await client.query(
+      'SELECT hints FROM players WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    
+    if (check.rows[0].hints <= 0) {
+      return res.status(400).json({ error: 'Нет доступных подсказок' });
+    }
+    
+    // Уменьшаем количество подсказок
+    await client.query(
+      'UPDATE players SET hints = hints - 1 WHERE id = $1',
+      [id]
+    );
+    
+    await client.query('COMMIT');
+    res.json({ success: true, hints: check.rows[0].hints - 1 });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Ошибка при использовании подсказки:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    client.release();
+  }
+});
+
+// Восстановление подсказок (за монеты)
+router.post('/:id/restore-hints', async (req, res) => {
+  const { id } = req.params;
+  const { amount, cost } = req.body;
+  
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // Проверяем достаточно ли монет
+    const player = await client.query(
+      'SELECT coins FROM players WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    
+    if (player.rows[0].coins < cost) {
+      return res.status(400).json({ error: 'Недостаточно монет' });
+    }
+    
+    // Списание монет и добавление подсказок
+    await client.query(
+      'UPDATE players SET hints = LEAST(hints + $1, 5), coins = coins - $2 WHERE id = $3',
+      [amount, cost, id]
+    );
+    
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Ошибка при восстановлении подсказок:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
