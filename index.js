@@ -6,7 +6,7 @@ const levelsRouter = require('./routes/levels');
 const playerRouter = require('./routes/player');
 const shopRouter = require('./routes/shop');
 const adminRoutes = require('./routes/admin');
-const promoCodesRouter = require('./routes/promoCodes');
+const promoRoutes = require('./routes/promoCodes'); 
 const app = express();
 app.use(express.json());
 
@@ -21,7 +21,7 @@ app.use('/levels', levelsRouter);
 app.use('/player', playerRouter);
 app.use('/shop', shopRouter);
 app.use('/admin', adminRoutes);
-app.use('/promo-codes', promoCodesRouter);
+app.use('/redeem', promoRoutes);
 // Заглушка для сохранения прогресса
 app.post('/progress', (req, res) => {
   const { userId, levelId } = req.body;
