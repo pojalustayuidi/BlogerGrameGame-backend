@@ -29,14 +29,9 @@ router.post('/buy', async (req, res) => {
       return res.status(400).json({ error: 'Товар не найден' });
     }
     const item = itemResult.rows[0];
-    if (!item.type.startsWith('hint')) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Этот товар не является подсказкой' });
-    }
-
 
     const playerResult = await client.query(
-      'SELECT coins, lives FROM players WHERE id = $1 FOR UPDATE',
+      'SELECT coins, lives, hints FROM players WHERE id = $1 FOR UPDATE',
       [playerId]
     );
     if (playerResult.rows.length === 0) {
@@ -45,31 +40,31 @@ router.post('/buy', async (req, res) => {
     }
     const player = playerResult.rows[0];
 
-    // Проверяем, хватает ли монет
     if (player.coins < item.cost) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Недостаточно монет' });
     }
 
     // Списываем монеты
-    const hintAmount = parseInt(item.type.replace('hint', '')) || 1;
-    const newHints = (player.hints || 0) + hintAmount;
-    const newCoins = player.coins - item.cost;
-
-    // Обновляем жизни, если куплена жизнь (можно покупать сверх 5)
+    let newCoins = player.coins - item.cost;
+    let newHints = player.hints || 0;
     let newLives = player.lives;
-    if (item.type === 'life') {
+
+    if (item.type.startsWith('hint')) {
+      const hintAmount = parseInt(item.type.replace('hint', '')) || 1;
+      newHints += hintAmount;
+    } else if (item.type === 'life') {
       const amount = item.amount || 1;
-      newLives = player.lives + amount;
+      newLives += amount;
+    } else {
+      // На будущее — обработка других типов
     }
 
-    // Обновляем данные игрока
-    await client.query( 
+    await client.query(
       'UPDATE players SET coins = $1, lives = $2, hints = $3 WHERE id = $4',
       [newCoins, newLives, newHints, playerId]
     );
 
-    // Добавляем запись в историю покупок
     const purchaseId = uuidv4();
     await client.query(
       'INSERT INTO shop_purchases (id, player_id, item_id, purchased_at) VALUES ($1, $2, $3, NOW())',
@@ -77,7 +72,7 @@ router.post('/buy', async (req, res) => {
     );
 
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Покупка успешна', newCoins, newLives, newHints});
+    res.json({ success: true, message: 'Покупка успешна', newCoins, newLives, newHints });
   } catch (err) {
     if (client) await client.query('ROLLBACK');
     console.error('Ошибка при покупке:', err);
@@ -86,6 +81,7 @@ router.post('/buy', async (req, res) => {
     if (client) client.release();
   }
 });
+
 
 router.get('/:playerId/hints', async (req, res) => {
   const { playerId } = req.params;
