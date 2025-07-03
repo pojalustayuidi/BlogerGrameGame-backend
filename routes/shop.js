@@ -66,7 +66,7 @@ router.post('/buy', async (req, res) => {
     // Обновляем данные игрока
     await client.query( 
       'UPDATE players SET coins = $1, lives = $2, hints = $3 WHERE id = $4',
-      [newCoins, newLives, playerId, newHints]
+      [newCoins, newLives, newHints, playerId]
     );
 
     // Добавляем запись в историю покупок
