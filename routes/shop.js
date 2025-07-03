@@ -51,11 +51,11 @@ router.post('/buy', async (req, res) => {
     let newLives = player.lives;
 
     if (item.type.startsWith('hint')) {
-      const hintAmount = parseInt(item.type.replace('hint', '')) || 1;
+      const hintAmount = item.amount || 1;
       newHints += hintAmount;
     } else if (item.type === 'life') {
       const amount = item.amount || 1;
-      newLives += amount;
+      newLives += amount; 
     } else {
       // На будущее — обработка других типов
     }

@@ -346,29 +346,60 @@ router.get('/:id/hints', async (req, res) => {
 // Использование подсказки
 router.post('/:id/use-hint', async (req, res) => {
   const { id } = req.params;
+  const { levelId, letterIndex } = req.body;
+
+  if (levelId === undefined || letterIndex === undefined) {
+    return res.status(400).json({ error: 'levelId и letterIndex обязательны' });
+  }
+
   const client = await pool.connect();
-  
+
   try {
     await client.query('BEGIN');
-    
-к
+
+    // Получаем подсказки
     const check = await client.query(
       'SELECT hints FROM players WHERE id = $1 FOR UPDATE',
       [id]
     );
-    
-    if (check.rows[0].hints <= 0) {
+
+    const currentHints = check.rows[0]?.hints ?? 0;
+
+    if (currentHints <= 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Нет доступных подсказок' });
     }
-    
-    // Уменьшаем количество подсказок
+
+    // Уменьшаем подсказки
     await client.query(
       'UPDATE players SET hints = hints - 1 WHERE id = $1',
       [id]
     );
-    
+
+    // Получаем текущий прогресс
+    const progressRes = await client.query(
+      'SELECT revealed_indices FROM progress WHERE player_id = $1 AND level_id = $2',
+      [id, levelId]
+    );
+
+    let revealed = progressRes.rows[0]?.revealed_indices || [];
+
+    if (!revealed.includes(letterIndex)) {
+      revealed.push(letterIndex);
+    }
+
+    // Обновляем прогресс
+    await client.query(
+      `INSERT INTO progress (player_id, level_id, revealed_indices)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (player_id, level_id)
+       DO UPDATE SET revealed_indices = $3`,
+      [id, levelId, revealed]
+    );
+
     await client.query('COMMIT');
-    res.json({ success: true, hints: check.rows[0].hints - 1 });
+
+    res.json({ success: true, hints: currentHints - 1, revealedIndices: revealed });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Ошибка при использовании подсказки:', err);
