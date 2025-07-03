@@ -357,28 +357,25 @@ router.post('/:id/use-hint', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Получаем подсказки
-    const check = await client.query(
+    const hintsRes = await client.query(
       'SELECT hints FROM players WHERE id = $1 FOR UPDATE',
       [id]
     );
 
-    const currentHints = check.rows[0]?.hints ?? 0;
+    const currentHints = hintsRes.rows[0]?.hints ?? 0;
 
     if (currentHints <= 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Нет доступных подсказок' });
     }
 
-    // Уменьшаем подсказки
     await client.query(
       'UPDATE players SET hints = hints - 1 WHERE id = $1',
       [id]
     );
 
-    // Получаем текущий прогресс
     const progressRes = await client.query(
-      'SELECT revealed_indices FROM progress WHERE player_id = $1 AND level_id = $2',
+      'SELECT revealed_indices FROM progress WHERE player_id = $1 AND current_level = $2 FOR UPDATE',
       [id, levelId]
     );
 
@@ -388,18 +385,23 @@ router.post('/:id/use-hint', async (req, res) => {
       revealed.push(letterIndex);
     }
 
-    // Обновляем прогресс
-    await client.query(
-      `INSERT INTO progress (player_id, level_id, revealed_indices)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (player_id, level_id)
-       DO UPDATE SET revealed_indices = $3`,
-      [id, levelId, revealed]
-    );
+    if (progressRes.rowCount === 0) {
+      await client.query(
+        'INSERT INTO progress (player_id, current_level, revealed_indices) VALUES ($1, $2, $3)',
+        [id, levelId, revealed]
+      );
+    } else {
+      // Обновляем существующий прогресс
+      await client.query(
+        'UPDATE progress SET revealed_indices = $1 WHERE player_id = $2 AND current_level = $3',
+        [revealed, id, levelId]
+      );
+    }
 
     await client.query('COMMIT');
 
-    res.json({ success: true, hints: currentHints - 1, revealedIndices: revealed });
+    res.json({ hintsLeft: currentHints - 1, revealedIndices: revealed });
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Ошибка при использовании подсказки:', err);
