@@ -4,6 +4,7 @@ const pool = require('../db');
 
 // Проверка и активация промокода
 router.post('/redeem', async (req, res) => {
+    console.log('Получен запрос на /redeem:', req.body);
   const { playerId, code } = req.body;
 
   if (!playerId || !code) {
