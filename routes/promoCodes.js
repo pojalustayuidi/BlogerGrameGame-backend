@@ -54,28 +54,32 @@ router.post('/redeem', async (req, res) => {
       [playerId, code]
     );
 
-    // Начисляем награду игроку (монеты и подсказки)
+    // Начисляем награду игроку (монеты, подсказки, жизни)
     const playerRes = await client.query(
-      'SELECT coins, hints FROM players WHERE id = $1',
+      'SELECT coins, hints, lives FROM players WHERE id = $1',
       [playerId]
     );
     if (playerRes.rows.length === 0) {
       throw new Error('Игрок не найден');
     }
 
-    const newCoins = playerRes.rows[0].coins + promo.reward_coins;
-    const newHints = (playerRes.rows[0].hints || 0) + promo.reward_hints;
+    const newCoins = (playerRes.rows[0].coins || 0) + (promo.reward_coins || 0);
+    const newHints = (playerRes.rows[0].hints || 0) + (promo.reward_hints || 0);
+    const newLives = (playerRes.rows[0].lives || 0) + (promo.reward_lives || 0);
 
     await client.query(
-      'UPDATE players SET coins = $1, hints = $2 WHERE id = $3',
-      [newCoins, newHints, playerId]
+      'UPDATE players SET coins = $1, hints = $2, lives = $3 WHERE id = $4',
+      [newCoins, newHints, newLives, playerId]
     );
 
     await client.query('COMMIT');
 
     res.json({
       success: true,
-      message: `Промокод активирован. Получено монет: ${promo.reward_coins}, подсказок: ${promo.reward_hints}`
+      message: `Промокод активирован. Получено: ${promo.reward_coins || 0} монет, ${promo.reward_hints || 0} подсказок, ${promo.reward_lives || 0} жизней`,
+      reward_coins: promo.reward_coins || 0,
+      reward_hints: promo.reward_hints || 0,
+      reward_lives: promo.reward_lives || 0
     });
   } catch (err) {
     await client.query('ROLLBACK');
