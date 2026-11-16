@@ -1,51 +1,67 @@
-# Stage 02 — database model
+# Модель данных и миграции
 
-Architecture: modular monolith, PostgreSQL 17. These tables are **data foundation** only; the old unsafe endpoints remain disabled until authenticated services are written.
+PostgreSQL 17 — основной источник истины для игроков, уровня, прогресса и экономики. Schema-first: изменения данных оформляются новыми SQL-файлами в `db/migrations/`.
 
-## Modules/tables
+## Основные таблицы
 
-| Module | Tables | Responsibility |
-| --- | --- | --- |
-| players | `players` (from stage 01) | Local player identity and test balances |
-| catalog | `categories`, `creators`, `creator_categories` | Three themes; creators can belong to several themes |
-| content | `media_sources`, `quotes`, `levels` | Manually curated, verified quotes with source URL and timeline; separate publishing state |
-| puzzle | `puzzle_attempts`, `puzzle_cells`, `puzzle_notes`, `level_progress` | Stable encrypted mapping, **individual** cell drafts, hints as personal notes, completions |
-| bonus | `bonus_answers` | Separate optional "Who said it?" stage |
-| Case 404 | `cases`, `case_steps`, `case_progress` | Sequence of levels plus investigation progress |
-| internal | `schema_migrations`, `admin_grants` | Migration history; stage 01 testing grants |
+| Область | Таблицы | Назначение |
+|:--|:--|:--|
+| Игроки | `players`, `guest_sessions` | Ресурсы игрока, хеши сессий и сроки их действия |
+| Контент | `categories`, `creators`, `creator_categories` | Категории и авторы (включая связь многие-ко-многим) |
+| Цитаты | `media_sources`, `quotes`, `levels` | Черновик/публикация, ссылка на источник и параметры уровня |
+| Попытки | `puzzle_attempts`, `puzzle_cells`, `puzzle_notes` | Стабильный шифр, отдельные физические клетки, блокнот |
+| Подсказки | `puzzle_hint_reveals` | Подсказка для определённой позиции, не для номера шифра |
+| Сетевые повторы | `puzzle_letter_requests` | Сохранённый ответ на `requestId` ввода буквы |
+| Прогресс | `level_progress`, `bonus_answers` | Пройденный уровень и единственный бонусный ответ |
+| Экономика | `economy_ledger`, `admin_grants` | Начисления/списания и локальные админ-выдачи |
+| Будущий сюжет | `cases`, `case_steps`, `case_progress` | Каркас связанных расследований |
+| Внутреннее | `schema_migrations` | Выполненные миграции и их контрольные суммы |
 
-## Cryptogram invariant
+## История миграций
 
-A quote is stored as plain text on the server, but **must never be sent to anonymous clients** before completion. A single attempt has one stable cipher mapping (`cipher_map` JSONB). The next gameplay branch will validate that each distinct letter maps to a distinct number.
+| Файл | Содержание |
+|:--|:--|
+| `001_game_foundation.sql` | Категории, авторы, цитаты, уровни, попытки, Case 404 |
+| `002_guest_sessions.sql` | Поле гостя и безопасное хранение хешей токенов |
+| `003_content_playtest.sql` | Ключи импорта черновиков и поля проверки попытки |
+| `004_economy.sql` | Журнал экономики, восстановление жизней, платные подсказки |
+| `005_letter_attempts.sql` | Сохранение результатов по `requestId`, расширение журнала событий |
 
-`puzzle_cells` has a primary key `(attempt_id, cell_position)`; it does **not** have a uniqueness constraint on `cipher_number`. Multiple positions may have the number 8, but editing one cell never updates the other. `given_letter` represents an initial clue; `entered_letter` is a separate, editable player draft field. `puzzle_notes` stores hypotheses like "8 = С?" without filling any cells. Until explicit check, the server must not reveal whether draft letters are right or wrong.
+**Не редактируйте уже применённые SQL-файлы.** Мигратор проверяет контрольные суммы и порядок, а транзакционная блокировка предотвращает одновременную запись истории. Конверсия окончаний строк LF/CRLF учитывается в проверке, но смысловые изменения запрещены.
 
-Use zero-based *Unicode code-point position* when generating letter cells, and send punctuation/spacing as public layout metadata from the gameplay service. This is a future feature; the current migration does not generate puzzles. Attempt numbers/mappings are generated once at attempt creation, never rerandomized when reopening.
+```powershell
+npm run db:migrate
+npm run db:migrate  # все миграции должны быть пропущены
+npm run db:status
+```
 
-## Safety and content policy
+Для новой структуры добавляйте отдельную миграцию `006_название.sql` и соответствующий тест. Не меняйте исторические миграции даже ради косметики.
 
-- `quotes.status='draft'` is default. Only verified/curated content should become published. Database constraint requires a source for published quotes; service must additionally verify source ownership and status.
-- `media_sources` records a real `https://` link, timestamp, verification/rights states. The schema **does not authorize downloading, hosting or embedding external videos**.
-- No real/invented quote is seeded by default. `npm run db:seed` creates only categories.
-- Only admin reads quote text and creator before the bonus stage; public API must return cipher cells only. Auth and access enforcement come in later branches.
-- `case_steps` references existing levels; a case does not replace the cryptogram engine.
+## Импорт контента
 
-## Commands, Windows PowerShell
+```powershell
+npm run db:seed
+npm run content:import-drafts
+npm run content:import-drafts # повтор не должен дублировать данные
+```
+
+`db:seed` добавляет **только категории**. Импорт создаёт 42 непроверенных кандидатных цитаты, связи авторов и уровни для локального плейтеста. Используются стабильные `external_key` для предотвращения повторного создания. Цитаты остаются `draft`, уровни — `is_published = FALSE`.
+
+**Статус черновика — не разрешение на публичную публикацию.** Источники, право использования медиа и точные слова автора необходимо проверять отдельно.
+
+## Резервное копирование
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\backup-local.ps1
-npm run db:migrate
-npm run db:migrate
-npm run db:seed
-npm run db:smoke
-npm run db:status
-npm test
 ```
 
-The migrator: discovers ordered SQL files, checks SHA-256 hashes, serializes concurrent runs via a PostgreSQL advisory transaction lock, and applies each migration in its own transaction. Repeated runs skip; modified applied migrations fail intentionally. Future changes must go in `002_*.sql`, not edits to `001_game_foundation.sql`.
+Скрипт вызывает `pg_dump` внутри локального контейнера и сохраняет дамп в `backups/`. Эта папка игнорируется Git. Храните копии отдельно от проекта и не выкладывайте в публичный репозиторий.
 
-**Never use** `docker compose down -v` when keeping existing database contents. Existing stage-01 `players` and `admin_grants` are retained. The integration smoke test creates temporary rows then always rolls back.
+> [!CAUTION]
+> `docker compose down -v` удаляет данные тома. Для обычной остановки используйте `docker compose stop` или `docker compose down` **без** `-v`.
 
-## What is not in stage 02
+## Почему поля попытки разделены
 
-No guest sessions/tokens yet; no public endpoints for puzzles, unlocking, editing cells, or bonuses; no video hosting; no real author/quote library yet. These are separate Git branches.
+`puzzle_cells` имеет первичный ключ `(attempt_id, cell_position)` и допускает одинаковый `cipher_number` для разных позиций. Исходная подсказка (`given_letter`) и введённая буква (`entered_letter`) — разные поля. `puzzle_notes` и `puzzle_hint_reveals` не обновляют другие позиции автоматически.
+
+Для таблиц и инвариантов игрового API см. [GAME_API.md](GAME_API.md).
