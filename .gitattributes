@@ -1,0 +1,2 @@
+# PostgreSQL migration checksums must be reproducible across platforms.
+db/migrations/*.sql text eol=lf
