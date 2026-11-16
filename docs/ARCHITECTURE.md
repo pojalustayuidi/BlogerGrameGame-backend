@@ -1,29 +1,71 @@
-# Architecture Decision — local-first cryptogram game
+# Архитектура
 
-Decision: **modular monolith**, Node.js LTS + Express + PostgreSQL.
+Backend реализован как **модульный монолит**: один Node.js-процесс, один HTTP API и PostgreSQL. Основные игровые правила сосредоточены в сервисах, а маршруты отвечают за ввод, авторизацию и HTTP-ответы.
 
-Stage 01 only protects the old repository from public unsafe operations, connects to local database and enables authenticated development admin operations. It is intentionally **not a playable game server**.
+```mermaid
+flowchart TD
+    Flutter[Flutter — мобильный клиент] -->|HTTPS в будущем / HTTP локально| Router[Express API]
+    Router --> Auth[Guest auth]
+    Router --> Game[Game service]
+    Router --> Economy[Economy service]
+    Router --> Admin[Local admin]
+    Auth --> PG[(PostgreSQL 17)]
+    Game --> PG
+    Economy --> PG
+    Admin --> PG
+```
 
-Future modules (each in its own branch/PR): `auth`, `players`, `content`, `puzzles`, `cases`, `economy`, `admin`, `media`. Modules should split HTTP routes from services and database repositories. The server authoritatively owns rewards and solutions; never trust submitted reward/coins from the mobile app.
+> Сейчас сервер слушает **только loopback** (`127.0.0.1`). Публичный HTTPS, масштабирование и защита рекламных/платёжных событий — отдельные задачи перед релизом.
 
-## Correct cryptogram UX (fixed requirement)
+## Слои
 
-- Each unique letter maps to one randomized number **within one saved attempt**. Same number represents the same correct letter.
-- User **manually enters each cell**. Entering the letter in one cell **must not autofill** any other cell, even if the numbers match.
-- Repeated numbers can be highlighted and guessed mappings saved in a separate notepad, but not automatically populated.
-- Guesses can be corrected and erased. Never mark single tentative inputs correct/incorrect instantly unless player explicitly requests a check.
-- Original quote and author are not returned by public API before completion.
-- After cryptogram completion there is a separate optional `Who said it?` stage, then attribution and an original-source link.
-- `Case 404` special event: connected cryptograms/clues leading to a reveal; initial v1 can have one curated case, not 30 invented cases.
+| Слой | Основные файлы | Ответственность |
+|:--|:--|:--|
+| HTTP | `index.js`, `routes/auth.js`, `routes/game.js`, `routes/admin.js` | Маршрутизация, форматы запросов, ответы и статус-коды |
+| Авторизация | `services/guestAuthService.js`, `lib/guestTokens.js` | Гость, хешированные токены, ротация и отзыв |
+| Криптограммы | `services/gameService.js`, `lib/puzzleText.js` | Попытки, шифрование, проверка букв, подсказки, бонус |
+| Экономика | `services/economyService.js`, `lib/economyRules.js` | Награды, покупки, жизнь и монеты в транзакциях |
+| Данные | `db.js`, `db/migrations/`, `scripts/db-migrate.js` | PostgreSQL и версионированные изменения схемы |
+| Контент | `content/`, `scripts/content-import-drafts.js` | Импорт непроверенных цитат только в черновики |
 
-## Release discipline
+Некоторые старые файлы в `routes/` остались в репозитории как наследие прежней версии. **Они не равнозначны активному публичному API**: в `index.js` старые маршруты отключены, а актуальные пути используют `/api/v1/auth` и `/api/v1/game`.
 
-1. `fix/01-security-local-bootstrap` — remove hardcoded secret; protect admin; disable unsafe legacy routes; local-only DB.
-2. `chore/02-db-migrations` — migration scripts, stable schema, seed/backup.
-3. `feat/03-guest-auth` — secure guest session, roles, token refresh.
-4. `feat/04-content-puzzles` — categories, curated levels, valid cryptogram generator, manual cell state.
-5. `feat/05-economy-admin` — server-authoritative coins, hints, purchases and local QA actions.
-6. `feat/06-cases-and-media` — Case 404, attribution, verified media source links.
-7. `test/07-integration-and-release` — integration tests, README, OpenAPI.
+## Ключевые инварианты
 
-Protect `main`; create a fresh branch from updated `main` for each feature, test, create PR, then merge. No real secrets or copied external media in the repository. Rotate the credential previously exposed in `db.js`: replacing the file does not invalidate the leaked credential or remove it from Git history.
+### Один номер — несколько отдельных клеток
+
+При создании попытки каждая различная кириллическая буква получает уникальное число. Числовое соответствие сохраняется в `puzzle_attempts.cipher_map` и не меняется при повторном открытии уровня.
+
+Клетка идентифицируется `(attempt_id, cell_position)`, а не номером шифра. Если в цитате два раза встретилась буква «В» и обе клетки получили число 4, ввод «В» в первую клетку **не заполняет** вторую.
+
+### Проверка происходит при вводе буквы
+
+- Сервер проверяет **только выбранную позицию**.
+- Верная буква закрепляется и не может быть заменена.
+- Неверная не сохраняется: увеличивается `mistakes`, а после каждой третьей ошибки снимается одна жизнь.
+- При нуле жизней ввод и платные подсказки блокируются до восстановления или покупки.
+- После последней верной буквы уровень закрывается автоматически; устаревший `/check` возвращает `410`.
+
+Черновой блокнот (`puzzle_notes`) хранит гипотезы и не валидирует их, не подставляет в клетки.
+
+### Данные и награды принадлежат серверу
+
+Мобильный клиент не выбирает баланс, стоимость товаров, правильные буквы и размер награды. API проверяет владельца попытки через гостевой токен. Источник и автор цитаты скрыты до завершения, а раскрытие происходит после бонусного этапа.
+
+### Идемпотентность
+
+`PATCH /cells/:position` требует `requestId`: результат записывается в `puzzle_letter_requests`. Повтор того же запроса возвращает сохранённый ответ и не расходует дополнительные попытки. Повтор ID с изменёнными параметрами — конфликт.
+
+Покупки используют UUID запроса; награды и списания пишутся в `economy_ledger` с уникальным ключом события. Блокировки строк (`FOR UPDATE`) и SQL-транзакции защищают от одновременных изменений одного аккаунта/попытки.
+
+## Почему не микросервисы
+
+Механика игры тесно связывает ввод букв, жизни, монеты и прогресс. Один backend позволяет провести эти изменения **одной транзакцией PostgreSQL**, не вводя очереди и распределённые транзакции раньше времени. По мере развития можно выделять модули без пересмотра игрового контракта.
+
+## Границы текущей реализации
+
+- **Реализовано:** игровой API, гостевые сессии, магазин за монеты, черновой каталог, бонус, транзакционная экономика.
+- **Структура подготовлена, игровой сценарий впереди:** полноценное сюжетное «Дело 404».
+- **Не реализовано:** реальные рекламные награды, платежи, восстановление гостевого аккаунта после потери токена, публичная инфраструктура и проверенная медиабиблиотека.
+
+См. [API](GAME_API.md), [базу данных](DATABASE.md) и [ограничения безопасности](SECURITY.md).

@@ -1,43 +1,47 @@
-# Stage 03 — Guest authentication (LOCAL ONLY)
+# Гостевая авторизация
 
-This is a **local development** API, not a production-ready internet deployment. The existing app binds to `127.0.0.1`. Do not expose it over the internet or place behind a public proxy without TLS, a proper shared rate limiter, monitoring, credentials rotation and threat review.
+Игрок может начать игру **без регистрации по почте**. На первом запуске сервер создаёт UUID игрока и выдаёт два случайных токена: короткоживущий `accessToken` и `refreshToken` для восстановления сессии.
 
-## Endpoints
+## Маршруты
 
-| Method | Endpoint | Input | Success |
-| --- | --- | --- | --- |
-| POST | `/api/v1/auth/guest` | `{}` | 201: `player`, `accessToken`, `refreshToken`, `expiresIn`, `refreshExpiresIn`, `tokenType` |
-| GET | `/api/v1/auth/me` | `Authorization: Bearer <accessToken>` | 200: `{player}` |
-| POST | `/api/v1/auth/refresh` | `{ "refreshToken": "..." }` | 200: newly rotated access **and refresh** tokens |
-| POST | `/api/v1/auth/logout` | `Authorization: Bearer <accessToken>` | 204, revokes session |
+| Метод | Маршрут | Результат |
+|:--|:--|:--|
+| `POST` | `/api/v1/auth/guest` | Создаёт игрока; тело `{}`; `201` с `player` и токенами |
+| `GET` | `/api/v1/auth/me` | Текущий профиль по `Bearer`-токену |
+| `POST` | `/api/v1/auth/refresh` | Принимает `{"refreshToken":"..."}` и ротирует **оба** токена |
+| `POST` | `/api/v1/auth/logout` | Отзывает сессию; `204 No Content` |
 
-Guest creation accepts **no** client-specified ID or balance. Sessions hold only SHA-256 hashes of generated, 256-bit opaque tokens. A refresh atomically invalidates the previous access and refresh tokens; the second use of an old refresh token returns 401. Access lasts 15 minutes; refresh lasts 30 days and rotates on each successful refresh. Logout invalidates both tokens of that session. Authentication never trusts a client-provided `playerId`.
+## Пример входа
 
-Response example (token placeholders **not** real tokens):
+```powershell
+$guest = Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:8085/api/v1/auth/guest' `
+  -ContentType 'application/json' -Body '{}'
 
-```json
-{
-  "tokenType": "Bearer",
-  "accessToken": "<opaque_access_token>",
-  "refreshToken": "<opaque_refresh_token>",
-  "expiresIn": 900,
-  "refreshExpiresIn": 2592000,
-  "player": {"id":"<uuid>","coins":30,"lives":5,"hints":2,"isGuest":true,"createdAt":"<date>"}
-}
+$headers = @{ Authorization = "Bearer $($guest.accessToken)" }
+$me = Invoke-RestMethod -Uri 'http://127.0.0.1:8085/api/v1/auth/me' -Headers $headers
+$me.player
 ```
 
-## Client expectations
+Не публикуйте значения реальных токенов.
 
-- Store tokens in OS secure storage (Android Keystore-backed or platform equivalent). Never log tokens or put them in analytics, URLs, screenshots or Git.
-- Save the **new** refresh token when refreshing; the previous refresh token stops working immediately.
-- Guest-only accounts have **no recovery mechanism** if their refresh token is lost or the app is uninstalled; account linking will be a later feature.
-- A new guest is created on first launch only. Subsequent launches should use the saved refresh token.
-- Never use the admin API from the mobile client. Game APIs will independently authorize ownership in future stages.
+## Сроки действия и хранение
 
-## Running
+- **Access:** 15 минут.
+- **Refresh:** 30 дней; успешно использованный refresh-токен становится недействительным.
+- Токены генерируются криптографически стойким генератором и содержат 256 бит энтропии.
+- В `guest_sessions` сохраняются **SHA-256-хеши**, но не исходные токены.
+- При `logout` обе части текущей сессии отзываются.
+- Игровой API определяет `playerId` на сервере, а не принимает его из запроса клиента.
 
-1. Run `npm run db:migrate` after applying patch 03; use `npm run db:status` to verify migration 002.
-2. `npm test` runs pure unit tests. `npm run auth:smoke` starts its own temporary local HTTP server, exercises guest/me/refresh/logout + negative tests, and removes only the newly created test player afterward. Stop other local testing only if it conflicts with resources; the smoke server picks a free port.
-3. `npm audit` should remain clean. The legacy game routes stay off (503).
+## Правила для Flutter
 
-HTTP responses intentionally never include original quote solutions. The 42 draft quotes have **not** been imported to the DB. Protect server access token hashes as sensitive authentication material even though they cannot be directly used as bearer credentials.
+1. При первом запуске создать гостя и сохранить оба токена в защищённом хранилище ОС, а не в обычных логах или URL.
+2. Передавать `Authorization: Bearer <accessToken>` в игровые запросы.
+3. При истечении access-токена выполнить `refresh` и **атомарно сохранить оба новых токена**.
+4. Не создавать нового гостя на каждом старте приложения; использовать сохранённый refresh-токен.
+5. Не помещать `ADMIN_API_KEY` в мобильную сборку.
+
+**Ограничение:** если пользователь потеряет refresh-токен или удалит приложение вместе с хранилищем, гостевой аккаунт пока нельзя восстановить. Перед реальными покупками потребуется привязка и восстановление аккаунта.
+
+**Текущий этап — local-only.** Для доступного из интернета сервера понадобятся TLS, защита от злоупотреблений, мониторинг, политика хранения токенов и дополнительный security review. См. [SECURITY.md](SECURITY.md).
