@@ -2,7 +2,7 @@
   "name": "cipher-archive-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-only cryptogram game API with manual cell entry and editorial draft catalog",
+  "description": "Local cryptogram API: immediate letter validation, lives and transactional economy",
   "main": "index.js",
   "engines": {"node": ">=20"},
   "scripts": {
@@ -15,7 +15,8 @@
     "db:status": "node scripts/db-status.js",
     "auth:smoke": "node scripts/auth-smoke.js",
     "content:import-drafts": "node scripts/content-import-drafts.js",
-    "game:smoke": "node scripts/game-smoke.js"
+    "game:smoke": "node scripts/game-smoke.js",
+    "economy:smoke": "node scripts/economy-smoke.js"
   },
   "dependencies": {
     "dotenv": "^16.5.0",

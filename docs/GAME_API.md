@@ -1,53 +1,47 @@
-# Local cryptogram API — stage 04
+# Криптограммы: API c немедленной проверкой букв (stage 05 v2)
 
-**Not production-ready**: all runtime environments remain localhost-only by design.
+Локальный сервер и гостевая авторизация. `LOCAL_DRAFT_PREVIEW=1` разрешает внутренний просмотр 42 черновых уровней; без этого флага API выдаёт только проверенные опубликованные уровни. Не переносить локальную конфигурацию на публичный сервер.
 
-## Environment
+## Маршруты `/api/v1/game`
 
-Public gameplay only returns published levels and published quotes. Our 42 candidates are unverified editorial drafts; to play them locally, explicitly set `LOCAL_DRAFT_PREVIEW=1` in your untracked `.env`, restart the local server, then authenticate with a *guest token*. Never put `ADMIN_API_KEY` in Flutter.
+| Метод | Маршрут | Тело / смысл |
+|---|---|---|
+| GET | `/categories` | Категории и счётчики уровней |
+| GET | `/levels?category=streamers` | Список без авторов и текста цитат |
+| POST | `/levels/:id/attempts` | `{}` — создать/возобновить попытку |
+| GET | `/attempts/:id` | Клетки, номера, блокнот, ошибки и остаток попыток |
+| PATCH | `/attempts/:id/cells/:position` | `{"letter":"Г","requestId":"uuid"}` — мгновенная проверка буквы |
+| PUT | `/attempts/:id/notes/:number` | `{"letter":"А","comment":"гипотеза"}` — отдельный блокнот |
+| POST | `/attempts/:id/hints/reveal` | `{"position":7}` — одна конкретная клетка |
+| POST | `/attempts/:id/bonus` | `{"guessedCreatorId":"uuid"}` или null — после победы |
+| POST | `/attempts/:id/check` | 410 `LETTER_VALIDATION_ONLY` — старый способ больше не используется |
+| GET | `/wallet` | Монеты, жизни, подсказки, таймер восстановления |
+| GET | `/wallet/history` | Журнал операций |
+| GET | `/shop` | Предложения за монеты |
+| POST | `/shop/purchases` | `{"sku":"life_1","requestId":"uuid"}` |
 
-`LOCAL_DRAFT_PREVIEW` is ignored unless `APP_ENV=local`. The server already refuses non-loopback HOST and PGHOST via the stage-01 safety config. To stop preview, set `LOCAL_DRAFT_PREVIEW=0` and restart. This does not publish anything; it only makes draft levels playable by authenticated local guests while enabled.
+Все запросы требуют `Authorization: Bearer <accessToken>` из `/api/v1/auth/guest`.
 
-## Route summary
+## Поведение ввода
 
-All routes require the stage-03 access token as HTTP header `Authorization: Bearer <accessToken>`.
+- Число в клетке — шифр буквы. Одно число = одна правильная буква, но **ни одна другая клетка не заполняется автоматически**.
+- Буква проверяется сервером немедленно. Неправильная не попадает в `puzzle_cells`; сервер возвращает `correct:false`, `triesRemaining`, `lostLife` и, если нужно, `wallet`.
+- Правильная фиксируется в `puzzle_cells` только в указанной позиции. Повторно редактировать эту клетку нельзя.
+- Каждая третья **неправильная буква** отнимает жизнь. При 0 жизней новый ввод и подсказки возвращают `NO_LIVES`. Срок восстановления берётся из `GET /wallet`.
+- После последней правильной клетки уровень завершается автоматически: `solved:true`, `rewardCoins`, `bonusOptions`, `wallet`. Автор и текст источника до решения не раскрываются.
+- `requestId` UUID обязателен **для каждого нажатия клавиши**. При повторной отправке из-за сети используй тот же UUID и те же параметры. Повтор не снимает попытку снова. Повтор с изменёнными данными возвращает 409.
+- `letter:null` больше не нужен: неправильная буква не сохраняется, правильная закрепляется.
+- Блокнот не заполняет клетки и не проверяет правильность букв.
+- После выбора или пропуска бонуса API раскрывает цитату и автора; источники остаются непроверенными черновиками для внутренней игры.
 
-| Method | Path | Body | Response |
-|---|---|---|---|
-| GET | `/api/v1/game/categories` | — | Categories and eligible level counts |
-| GET | `/api/v1/game/levels?category=streamers` | — | Level IDs, number, difficulty, progress (no quotes/creators) |
-| POST | `/api/v1/game/levels/:levelId/attempts` | `{}` | New or resumed attempt (201/200) |
-| GET | `/api/v1/game/attempts/:attemptId` | — | Stable layout with cipher numbers, entered and given letters, notes |
-| PATCH | `/api/v1/game/attempts/:attemptId/cells/:position` | `{"letter":"А"}` or `{"letter":null}` | Updates **only that one cell**, even if its cipher number repeats elsewhere |
-| PUT | `/api/v1/game/attempts/:attemptId/notes/:number` | `{"letter":"К","comment":"похоже на К"}` | Updates only a scratchpad note; never fills any cells |
-| POST | `/api/v1/game/attempts/:attemptId/check` | `{}` | Complete phrase check, or `PUZZLE_INCOMPLETE`; wrong checks have 4-second cooldown |
-| POST | `/api/v1/game/attempts/:attemptId/bonus` | `{"guessedCreatorId":"uuid"}` or `{ "guessedCreatorId":null }` | One-time bonus answer or skip, then reveal correct quote/author/source metadata |
-
-## Format of a layout item
+## Формат клетки
 
 `{"position":0,"type":"letter","number":17,"given":null,"letter":null}`
 
 `{"position":3,"type":"separator","value":" "}`
 
-- **Position** is a zero-based index in the original quote string, counting Unicode codepoints.
-- **Number** is a random integer 1..33 assigned consistently to the corresponding Russian letter within one attempt.
-- **Given** is the initial hint for a particular cell only, not for all equal-numbered cells.
-- **Letter** is the player's own manual entry for that cell only; sending `null` erases it.
-- **Scratchpad** stores hypothesized number→letter associations independently.
-- **The cipher map, true phrase and creator do not appear in unsolved responses.** The name is made available only in bonus choices after solving; the full attribution is revealed after answering/skipping the bonus.
+`position` — индекс символа (Unicode codepoint), включая пробелы; `number` — число от 1 до 33, случайно заданное этой букве при создании попытки. `given` — исходная подсказка конкретной клетки, `hinted:true` — позже оплаченная подсказка. Верное решение не возвращается в поле `layout` раньше времени.
 
-## Draft content
+## Статус
 
-`npm run content:import-drafts` imports the bundled 42 candidate quotes into `creators`, `media_sources`, `quotes` and `levels` with status `draft` and `is_published=false`. Repeated runs are safe (keys `draft-v5:*`), and players/coins/progress are untouched. `media_sources` only contains source *links*, with `verification_status='unverified'` and `rights_status='unknown'`.
-
-**Not a publication workflow**. Before actual public release, all text, attribution, licenses and embedded source media must be manually reviewed. No video is downloaded or redistributed in this patch.
-
-## Validation and rewards
-
-- The server validates bearer token and attempt ownership for every operation.
-- Given cells cannot be changed, solved attempts cannot be edited.
-- Only whole-phrase checks count mistakes; no per-keystroke correctness feedback.
-- Incorrect checks have a short cooldown; GET/notes/edits remain available.
-- Successful levels create `level_progress`, but **award 0 coins** at this stage; production economy will be server-authoritative in stage 05.
-- Bonus cannot be attempted before solving, is accepted only once, and also awards 0 coins for now.
-- Legacy API routes (`/levels`, `/player`, `/shop` etc.) remain intentionally disabled.
+Этап разработан для локального теста. Уровни из каталога не опубликованы, права на видео не проверены, реклама и платежи за деньги не подключены.

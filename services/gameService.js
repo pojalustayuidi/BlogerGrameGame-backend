@@ -1,9 +1,10 @@
 'use strict';
 const {tokenHash}=require('../lib/guestTokens');
+const {applyEvent,syncWallet,walletDTO}=require('./economyService');
+const {RULES,costsLifeOnWrongLetter,triesRemaining}=require('../lib/economyRules');
 const {splitQuote,cleanLetter,generateCipher,chooseGivens,renderLayout,isSolved,publicLevel}=require('../lib/puzzleText');
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BAD=(status,code)=>Object.assign(new Error(code),{status,code});
-const CHECK_COOLDOWN_SECONDS=4;
 function isId(v){return typeof v==='string'&&UUID.test(v);}
 function makeGameService(pool,{allowDraftPreview=false}={}){
   const preview=allowDraftPreview===true;
@@ -44,7 +45,7 @@ function makeGameService(pool,{allowDraftPreview=false}={}){
   async function getAttemptRow(client,playerId,attemptId,lock=false){
     const r=await client.query(`SELECT a.id,a.player_id,a.level_id,a.cipher_map,a.status,a.mistakes,
       a.started_at,a.completed_at,a.last_checked_at,q.quote_text,q.creator_id,
-      q.source_id,l.category_slug,l.level_number
+      q.source_id,l.category_slug,l.level_number,l.reward_coins
       FROM puzzle_attempts a JOIN levels l ON l.id=a.level_id
       JOIN quotes q ON q.id=l.quote_id JOIN categories c ON c.slug=l.category_slug
       WHERE a.id=$1 AND a.player_id=$2 AND c.is_active=TRUE AND ${visibility} ${lock?'FOR UPDATE OF a':''}`,[attemptId,playerId]);
@@ -53,12 +54,16 @@ function makeGameService(pool,{allowDraftPreview=false}={}){
   }
   async function attemptPayload(client,row){
     const [cells,notes,bonus]=await Promise.all([
-      client.query('SELECT cell_position,cipher_number,given_letter,entered_letter FROM puzzle_cells WHERE attempt_id=$1 ORDER BY cell_position',[row.id]),
+      client.query(`SELECT c.cell_position,c.cipher_number,c.given_letter,c.entered_letter,
+        (hr.attempt_id IS NOT NULL) AS hinted FROM puzzle_cells c
+        LEFT JOIN puzzle_hint_reveals hr ON hr.attempt_id=c.attempt_id AND hr.cell_position=c.cell_position
+        WHERE c.attempt_id=$1 ORDER BY c.cell_position`,[row.id]),
       client.query('SELECT cipher_number,candidate_letter,comment FROM puzzle_notes WHERE attempt_id=$1 ORDER BY cipher_number',[row.id]),
       client.query('SELECT result,guessed_creator_id FROM bonus_answers WHERE attempt_id=$1',[row.id])
     ]);
     const response={id:row.id,levelId:row.level_id,category:row.category_slug,levelNumber:row.level_number,
-      status:row.status,mistakes:row.mistakes,startedAt:row.started_at,completedAt:row.completed_at,
+      status:row.status,mistakes:row.mistakes,triesRemaining:triesRemaining(Number(row.mistakes)),
+      triesPerLife:RULES.wrongLettersPerLife,startedAt:row.started_at,completedAt:row.completed_at,
       layout:renderLayout(row.quote_text,cells.rows),notes:notes.rows.map(x=>({number:x.cipher_number,letter:x.candidate_letter,comment:x.comment})),
       bonusAnswered:bonus.rowCount>0};
     if(row.status==='solved'){
@@ -108,21 +113,84 @@ function makeGameService(pool,{allowDraftPreview=false}={}){
       return {created:true,attempt:response};
     }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
   }
-  async function editCell(playerId,attemptId,position,value){
+  // Locked attempt + locked wallet + one transaction: no double life loss or reward.
+  async function finishIfComplete(client,playerId,row){
+    const cells=await client.query('SELECT cell_position,given_letter,entered_letter FROM puzzle_cells WHERE attempt_id=$1',[row.id]);
+    if(!isSolved(row.quote_text,cells.rows))return {solved:false};
+    await client.query("UPDATE puzzle_attempts SET status='solved',completed_at=NOW() WHERE id=$1",[row.id]);
+    const added=await client.query(`INSERT INTO level_progress(player_id,level_id,completed_attempt_id,best_mistakes)
+      VALUES($1,$2,$3,$4) ON CONFLICT(player_id,level_id) DO NOTHING RETURNING player_id`,
+      [playerId,row.level_id,row.id,row.mistakes]);
+    let rewardCoins=0,wallet=null,flawless=false;
+    if(added.rowCount){
+      const hints=await client.query('SELECT 1 FROM puzzle_hint_reveals WHERE attempt_id=$1 LIMIT 1',[row.id]);
+      flawless=Number(row.mistakes)===0&&!hints.rowCount;
+      const paid=await applyEvent(client,playerId,{key:`level:${row.level_id}`,type:'level_reward',
+        coins:Number(row.reward_coins)+(flawless?RULES.flawless:0),
+        details:{levelId:row.level_id,attemptId:row.id,flawless}});
+      rewardCoins=paid.coinsDelta;wallet=paid.wallet;
+    }
+    return {solved:true,rewardCoins,flawless,bonusOptions:await bonusChoices(client,row),wallet};
+  }
+  // Each wrong LETTER immediately consumes one of three tries. The third costs 1 life.
+  // Each requestId is a durable replay key; changing its input is a conflict.
+  async function editCell(playerId,attemptId,position,value,requestId){
     if(!isId(attemptId)||!Number.isInteger(position)||position<0||position>499)throw BAD(400,'INVALID_CELL');
-    const letter=value===null?null:cleanLetter(value);
-    if(value!==null&&!letter)throw BAD(400,'INVALID_LETTER');
+    const letter=cleanLetter(value);
+    if(!letter||!isId(requestId))throw BAD(400,'INVALID_LETTER_REQUEST');
     const client=await pool.connect();let tx=false;
     try{
       await client.query('BEGIN');tx=true;
       const row=await getAttemptRow(client,playerId,attemptId,true);
+      const previous=await client.query(`SELECT cell_position,candidate_letter,response FROM puzzle_letter_requests
+        WHERE attempt_id=$1 AND request_id=$2`,[attemptId,requestId]);
+      if(previous.rowCount){
+        const old=previous.rows[0];
+        if(Number(old.cell_position)!==position||old.candidate_letter!==letter)throw BAD(409,'REQUEST_ID_CONFLICT');
+        await client.query('COMMIT');tx=false;
+        return {...old.response,replayed:true};
+      }
       if(row.status!=='in_progress')throw BAD(409,'ATTEMPT_NOT_ACTIVE');
-      const cell=await client.query(`UPDATE puzzle_cells SET entered_letter=$3 WHERE attempt_id=$1 AND cell_position=$2
-        AND given_letter IS NULL RETURNING cell_position,cipher_number,entered_letter`,[attemptId,position,letter]);
-      if(!cell.rowCount)throw BAD(409,'CELL_NOT_EDITABLE');
+      const cell=await client.query(`SELECT c.cipher_number,c.given_letter,c.entered_letter,
+        (hr.attempt_id IS NOT NULL) AS hinted FROM puzzle_cells c
+        LEFT JOIN puzzle_hint_reveals hr ON hr.attempt_id=c.attempt_id AND hr.cell_position=c.cell_position
+        WHERE c.attempt_id=$1 AND c.cell_position=$2`,[attemptId,position]);
+      if(!cell.rowCount)throw BAD(404,'CELL_NOT_FOUND');
+      const data=cell.rows[0];
+      if(data.given_letter!==null||data.hinted)throw BAD(409,'CELL_LOCKED');
+      const correct=splitQuote(row.quote_text)[position];
+      if(!cleanLetter(correct))throw BAD(400,'INVALID_CELL');
+      if(data.entered_letter===correct)throw BAD(409,'CELL_ALREADY_CORRECT');
+      const w=await syncWallet(client,playerId);
+      if(w.lives===0)throw BAD(409,'NO_LIVES');
+      let result;
+      if(letter!==correct){
+        const mistakes=Number(row.mistakes)+1;
+        const lostLife=costsLifeOnWrongLetter(mistakes);
+        let wallet=walletDTO(w);
+        if(lostLife){
+          const paid=await applyEvent(client,playerId,{key:`wrong-letter:${attemptId}:${mistakes}`,
+            type:'wrong_letter',lives:-1,details:{attemptId,position,mistakes}});
+          wallet=paid.wallet;
+        }
+        await client.query('UPDATE puzzle_attempts SET mistakes=$2 WHERE id=$1',[attemptId,mistakes]);
+        // Wrong letter is NEVER saved. Do not return the correct letter.
+        result={correct:false,position,mistakes,triesRemaining:triesRemaining(mistakes),
+          lostLife,locked:wallet.lives===0,wallet};
+      }else{
+        const updated=await client.query(`UPDATE puzzle_cells SET entered_letter=$3
+          WHERE attempt_id=$1 AND cell_position=$2 RETURNING cipher_number,entered_letter`,
+          [attemptId,position,letter]);
+        const finished=await finishIfComplete(client,playerId,row);
+        result={correct:true,position,cell:{position,number:Number(updated.rows[0].cipher_number),
+          letter:updated.rows[0].entered_letter,hinted:false},mistakes:Number(row.mistakes),
+          triesRemaining:triesRemaining(Number(row.mistakes)),...finished};
+      }
+      await client.query(`INSERT INTO puzzle_letter_requests
+        (attempt_id,request_id,cell_position,candidate_letter,response) VALUES($1,$2,$3,$4,$5::jsonb)`,
+        [attemptId,requestId,position,letter,JSON.stringify(result)]);
       await client.query('COMMIT');tx=false;
-      // This SQL only updates the specified position. It never propagates equal numbers.
-      return {position:Number(cell.rows[0].cell_position),number:Number(cell.rows[0].cipher_number),letter:cell.rows[0].entered_letter};
+      return result;
     }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
   }
   async function editNote(playerId,attemptId,number,letterValue,comment){
@@ -142,34 +210,6 @@ function makeGameService(pool,{allowDraftPreview=false}={}){
         RETURNING cipher_number,candidate_letter,comment`,[attemptId,number,letter,comment]);
       await client.query('COMMIT');tx=false;
       return {number:Number(note.rows[0].cipher_number),letter:note.rows[0].candidate_letter,comment:note.rows[0].comment};
-    }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
-  }
-  async function check(playerId,attemptId){
-    if(!isId(attemptId))throw BAD(400,'INVALID_ATTEMPT_ID');
-    const client=await pool.connect();let tx=false;
-    try{
-      await client.query('BEGIN');tx=true;
-      const row=await getAttemptRow(client,playerId,attemptId,true);
-      if(row.status==='solved')throw BAD(409,'ALREADY_SOLVED');
-      if(row.status!=='in_progress')throw BAD(409,'ATTEMPT_NOT_ACTIVE');
-      if(row.last_checked_at && (Date.now()-new Date(row.last_checked_at).getTime())<CHECK_COOLDOWN_SECONDS*1000)
-        throw BAD(429,'CHECK_COOLDOWN');
-      const cells=await client.query('SELECT cell_position,given_letter,entered_letter FROM puzzle_cells WHERE attempt_id=$1',[attemptId]);
-      const allFilled=cells.rows.every(c=>c.given_letter!==null||c.entered_letter!==null);
-      if(!allFilled)throw BAD(409,'PUZZLE_INCOMPLETE');
-      const correct=isSolved(row.quote_text,cells.rows);
-      await client.query('UPDATE puzzle_attempts SET last_checked_at=NOW() WHERE id=$1',[attemptId]);
-      if(!correct){
-        await client.query('UPDATE puzzle_attempts SET mistakes=mistakes+1 WHERE id=$1',[attemptId]);
-        await client.query('COMMIT');tx=false;
-        return {correct:false,mistakes:row.mistakes+1,retryAfterSeconds:CHECK_COOLDOWN_SECONDS};
-      }
-      await client.query("UPDATE puzzle_attempts SET status='solved',completed_at=NOW() WHERE id=$1",[attemptId]);
-      await client.query(`INSERT INTO level_progress(player_id,level_id,completed_attempt_id,best_mistakes)
-        VALUES($1,$2,$3,$4) ON CONFLICT(player_id,level_id) DO NOTHING`,[playerId,row.level_id,attemptId,row.mistakes]);
-      const options=await bonusChoices(client,row);
-      await client.query('COMMIT');tx=false;
-      return {correct:true,attemptId,bonusOptions:options,rewardCoins:0,comment:'Economy and rewards are reserved for stage 05'};
     }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
   }
   async function bonusChoices(client,row){
@@ -202,13 +242,54 @@ function makeGameService(pool,{allowDraftPreview=false}={}){
       const opts=await bonusChoices(client,row);
       if(guessedCreatorId!==null&&!opts.some(o=>o.id===guessedCreatorId))throw BAD(400,'INVALID_BONUS_CHOICE');
       const result=guessedCreatorId===null?'skipped':guessedCreatorId===row.creator_id?'correct':'incorrect';
+      let rewardCoins=0,wallet=null;
+      if(result==='correct'){
+        const paid=await applyEvent(client,playerId,{key:`bonus:${attemptId}`,type:'bonus_reward',
+          coins:RULES.bonusCorrect,details:{attemptId}});
+        rewardCoins=paid.coinsDelta;wallet=paid.wallet;
+      }
       await client.query(`INSERT INTO bonus_answers(attempt_id,guessed_creator_id,result,reward_coins)
-        VALUES($1,$2,$3,0)`,[attemptId,guessedCreatorId,result]);
+        VALUES($1,$2,$3,$4)`,[attemptId,guessedCreatorId,result,rewardCoins]);
       const answer=await reveal(client,row,{result});
       await client.query('COMMIT');tx=false;
-      return {result,reveal:answer,rewardCoins:0};
+      return {result,reveal:answer,rewardCoins,wallet};
     }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
   }
-  return {authenticate,categories,listLevels,createAttempt,getAttempt,editCell,editNote,check,answerBonus};
+  async function revealHint(playerId,attemptId,position){
+    if(!isId(attemptId)||!Number.isInteger(position)||position<0||position>499)throw BAD(400,'INVALID_HINT_TARGET');
+    const client=await pool.connect();let tx=false;
+    try{
+      await client.query('BEGIN');tx=true;
+      const row=await getAttemptRow(client,playerId,attemptId,true);
+      if(row.status!=='in_progress')throw BAD(409,'ATTEMPT_NOT_ACTIVE');
+      const cell=await client.query(`SELECT c.cipher_number,c.given_letter,c.entered_letter,
+        hr.revealed_letter FROM puzzle_cells c
+        LEFT JOIN puzzle_hint_reveals hr ON hr.attempt_id=c.attempt_id AND hr.cell_position=c.cell_position
+        WHERE c.attempt_id=$1 AND c.cell_position=$2`,[attemptId,position]);
+      if(!cell.rowCount)throw BAD(404,'CELL_NOT_FOUND');
+      const data=cell.rows[0];
+      if(data.given_letter!==null)throw BAD(409,'CELL_ALREADY_GIVEN');
+      if(data.revealed_letter!==null){
+        await client.query('COMMIT');tx=false;
+        return {applied:false,cell:{position,number:Number(data.cipher_number),letter:data.revealed_letter,hinted:true}};
+      }
+      const correct=splitQuote(row.quote_text)[position];
+      if(!cleanLetter(correct))throw BAD(400,'INVALID_HINT_TARGET');
+      if(data.entered_letter===correct)throw BAD(409,'CELL_ALREADY_CORRECT');
+      const w=await syncWallet(client,playerId);
+      if(w.lives===0)throw BAD(409,'NO_LIVES');
+      const payment=await applyEvent(client,playerId,{key:`hint:${attemptId}:${position}`,type:'hint_reveal',
+        hints:-1,details:{attemptId,position}});
+      await client.query('UPDATE puzzle_cells SET entered_letter=$3 WHERE attempt_id=$1 AND cell_position=$2',
+        [attemptId,position,correct]);
+      await client.query(`INSERT INTO puzzle_hint_reveals(attempt_id,cell_position,revealed_letter) VALUES($1,$2,$3)`,
+        [attemptId,position,correct]);
+      const finished=await finishIfComplete(client,playerId,row);
+      await client.query('COMMIT');tx=false;
+      return {applied:true,cell:{position,number:Number(data.cipher_number),letter:correct,hinted:true},
+        ...finished,wallet:finished.wallet||payment.wallet};
+    }catch(e){if(tx)await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
+  }
+  return {authenticate,categories,listLevels,createAttempt,getAttempt,editCell,editNote,answerBonus,revealHint};
 }
-module.exports={makeGameService,BAD,isId,CHECK_COOLDOWN_SECONDS};
+module.exports={makeGameService,BAD,isId};

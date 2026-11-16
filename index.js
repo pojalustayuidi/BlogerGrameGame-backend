@@ -1,5 +1,5 @@
 'use strict';
-// Stage 04: playable cryptogram API. Still LOCAL-ONLY until security/release review.
+// Stage 05: server-authoritative playtest economy. Still LOCAL-ONLY.
 const express = require('express');
 const {config} = require('./lib/runtime');
 const pool = require('./db');
@@ -13,13 +13,13 @@ app.disable('trust proxy');
 app.use(express.json({limit:'32kb'}));
 app.use((_req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');next();});
 app.get('/health', async (_req,res)=>{
-  try {await pool.query('SELECT 1'); res.json({status:'ok',environment:'local',stage:4});}
+  try {await pool.query('SELECT 1'); res.json({status:'ok',environment:'local',stage:5});}
   catch(err){console.error('Health DB failure:',err.message);res.status(503).json({status:'database_unavailable'});}
 });
 app.use('/api/v1/admin', requireAdmin(config.adminKey), adminRoutes);
 app.use('/api/v1/auth',authRoutes);
 app.use('/api/v1/game',gameRoutes);
-// Old endpoints MUST stay disabled; only server-owned /api/v1/game is enabled.
+// Old endpoints MUST stay disabled; only authenticated /api/v1/game is enabled.
 for (const path of ['/player','/shop','/redeem','/progress','/levels','/admin']) {
   app.use(path, (_req,res)=>res.status(503).json({error:'LEGACY_API_DISABLED'}));
 }
@@ -35,7 +35,7 @@ app.use((err,_req,res,_next)=>{
   res.status(500).json({error:'INTERNAL_ERROR'});
 });
 const server=app.listen(config.port,config.host,()=>{
-  console.log(`Local backend stage 04 listening at http://${config.host}:${config.port}`);
+  console.log(`Local backend stage 05v2 listening at http://${config.host}:${config.port}`);
 });
 function shutdown(){server.close(()=>pool.end().finally(()=>process.exit(0)));}
 process.on('SIGTERM',shutdown);
