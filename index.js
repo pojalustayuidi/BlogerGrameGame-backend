@@ -1,41 +1,34 @@
+'use strict';
+// Stage 01: secure LOCAL bootstrap. Legacy routes are intentionally offline
+// until guest authentication and server-authoritative economy are implemented.
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const pool = require('./db'); // подключение к PostgreSQL
-const levelsRouter = require('./routes/levels');
-const playerRouter = require('./routes/player');
-const shopRouter = require('./routes/shop');
+const {config} = require('./lib/runtime');
+const pool = require('./db');
+const {requireAdmin} = require('./lib/adminAuth');
 const adminRoutes = require('./routes/admin');
-const promoRoutes = require('./routes/promoCodes'); 
 const app = express();
-app.use(express.json());
-
-// Инициализация таблиц (например, players)
-const initSQL = fs.readFileSync(path.join(__dirname, 'init.sql'), 'utf8');
-pool.query(initSQL)
-  .then(() => console.log('✅ Таблицы инициализированы'))
-  .catch(err => console.error('❌ Ошибка инициализации таблиц:', err));
-
-// Маршруты
-app.use('/levels', levelsRouter);
-app.use('/player', playerRouter);
-app.use('/shop', shopRouter);
-app.use('/admin', adminRoutes);
-app.use('/redeem', promoRoutes);
-// Заглушка для сохранения прогресса
-app.post('/progress', (req, res) => {
-  const { userId, levelId } = req.body;
-
-  if (!userId || !levelId) {
-    return res.status(400).json({ error: 'userId и levelId обязательны' });
-  }
-
-  console.log(`Игрок ${userId} прошёл уровень ${levelId}`);
-  res.status(200).json({ message: 'Прогресс принят (заглушка)' });
+app.disable('x-powered-by');
+app.use(express.json({limit:'32kb'}));
+app.use((_req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');next();});
+app.get('/health', async (_req,res)=>{
+  try {await pool.query('SELECT 1'); res.json({status:'ok',environment:'local',stage:1});}
+  catch(err){console.error('Health DB failure:',err.message);res.status(503).json({status:'database_unavailable'});}
 });
-
-// Запуск сервера
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на http://localhost:${PORT}`);
+app.use('/api/v1/admin', requireAdmin(config.adminKey), adminRoutes);
+// No public read/write of player UUIDs, plaintext quotes, balance or progress.
+for (const path of ['/player','/shop','/redeem','/progress','/levels','/admin']) {
+  app.use(path, (_req,res)=>res.status(503).json({error:'LEGACY_API_DISABLED',message:'Use protected API after migration'}));
+}
+app.use('/api/v1',(_req,res)=>res.status(404).json({error:'NOT_IMPLEMENTED_YET'}));
+app.use((_req,res)=>res.status(404).json({error:'NOT_FOUND'}));
+app.use((err,_req,res,_next)=>{
+  console.error('Request error:',err.message);
+  res.status(err.status||500).json({error:err.status===400?'INVALID_JSON':'INTERNAL_ERROR'});
 });
+const server=app.listen(config.port,config.host,()=>{
+  console.log(`Local backend stage 01 listening at http://${config.host}:${config.port}`);
+});
+function shutdown(){server.close(()=>pool.end().finally(()=>process.exit(0)));}
+process.on('SIGTERM',shutdown);
+process.on('SIGINT',shutdown);
+module.exports = app;

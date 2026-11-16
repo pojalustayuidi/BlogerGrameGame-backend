@@ -1,0 +1,12 @@
+'use strict';
+const {test} = require('node:test');
+const assert=require('node:assert/strict');
+const {requireLocalConfiguration}=require('../lib/config');
+const {compareKeys}=require('../lib/adminAuth');
+const valid={APP_ENV:'local',NODE_ENV:'development',HOST:'127.0.0.1',PORT:'8085',PGHOST:'127.0.0.1',PGPORT:'5433',PGUSER:'cryptogram_dev',PGPASSWORD:'local_password',PGDATABASE:'cryptogram_dev',ADMIN_API_KEY:'a'.repeat(64)};
+test('accept local env',()=>assert.equal(requireLocalConfiguration(valid).port,8085));
+test('reject public bind address',()=>assert.throws(()=>requireLocalConfiguration({...valid,HOST:'0.0.0.0'})));
+test('reject remote database',()=>assert.throws(()=>requireLocalConfiguration({...valid,PGHOST:'db.example.com'})));
+test('reject prod mode',()=>assert.throws(()=>requireLocalConfiguration({...valid,APP_ENV:'production'})));
+test('reject missing/weak admin key',()=>assert.throws(()=>requireLocalConfiguration({...valid,ADMIN_API_KEY:'test'})));
+test('admin key compare',()=>{assert.equal(compareKeys('a'.repeat(64),'a'.repeat(64)),true);assert.equal(compareKeys('a'.repeat(64),'b'.repeat(64)),false);assert.equal(compareKeys('a'.repeat(64),undefined),false);});

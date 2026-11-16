@@ -1,8 +1,7 @@
-const { Pool } = require('pg');
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://game_blogergramm_user:YbRO63X3x1rb3lXijJc4XEnGueMJImgO@dpg-d19h4kili9vc7380pvc0-a/game_blogergramm',
-  ssl: false
-});
-
-module.exports = pool;
+'use strict';
+// No embedded credentials, no remote database fallback.
+const {Pool} = require('pg');
+const {config} = require('./lib/runtime');
+module.exports = new Pool({host:config.pgHost, port:config.pgPort,
+  user:config.pgUser, password:config.pgPassword, database:config.pgDatabase,
+  ssl:false, max:5, connectionTimeoutMillis:3000, idleTimeoutMillis:10000});
