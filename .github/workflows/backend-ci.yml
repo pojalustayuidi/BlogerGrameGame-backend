@@ -1,0 +1,48 @@
+name: Backend CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cryptogram_dev
+          POSTGRES_PASSWORD: ci_test_only_password
+          POSTGRES_DB: cryptogram_dev
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U cryptogram_dev -d cryptogram_dev"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      APP_ENV: local
+      NODE_ENV: test
+      HOST: 127.0.0.1
+      PORT: '8085'
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: cryptogram_dev
+      PGPASSWORD: ci_test_only_password
+      PGDATABASE: cryptogram_dev
+      ADMIN_API_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm test
+      - run: npm run db:migrate
+      - run: npm run db:migrate # repeat should skip safely
+      - run: npm run db:seed
+      - run: npm run db:seed # repeat should preserve categories
+      - run: npm run db:smoke
+      - run: npm run db:status

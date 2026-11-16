@@ -2,7 +2,7 @@
   "name": "cipher-archive-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first cryptogram backend security/bootstrap stage",
+  "description": "Local-first cryptogram backend; stage 02 adds versioned PostgreSQL game schema",
   "main": "index.js",
   "engines": {
     "node": ">=20"
@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "db:migrate": "node scripts/db-migrate.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:smoke": "node scripts/db-smoke.js",
+    "db:status": "node scripts/db-status.js"
   },
   "dependencies": {
     "dotenv": "^16.5.0",
