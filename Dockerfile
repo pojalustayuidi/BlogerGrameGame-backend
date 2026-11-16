@@ -1,20 +1,8 @@
-
-FROM node:18-alpine
-
-
+# Development convenience only. This stage must not be deployed publicly.
+FROM node:22-alpine
 WORKDIR /app
-
-
 COPY package*.json ./
-
-
-RUN npm install
-
-
+RUN npm install --omit=dev
 COPY . .
-
-
-EXPOSE 3000
-
-
+EXPOSE 8085
 CMD ["npm", "start"]
