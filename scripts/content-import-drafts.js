@@ -4,6 +4,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const pool=require('../db');
 const {splitQuote}=require('../lib/puzzleText');
+const {quoteReward}=require('../lib/economyRules');
 const catalog=JSON.parse(fs.readFileSync(path.join(__dirname,'..','content','quote_candidates_42_v5.json'),'utf8'));
 const DIFFICULTY={easy:'easy',normal:'normal',medium:'normal',medium_hard:'hard',hard:'hard',expert:'expert',bonus:'easy'};
 const PLATFORM=url=>url.includes('youtube.com')||url.includes('youtu.be')?'youtube':url.includes('tiktok.com')?'tiktok':url.includes('twitch.tv')?'twitch':url.includes('vk.com')?'vk':url.includes('rutube.ru')?'rutube':'other';
@@ -37,8 +38,8 @@ async function run(){
         [creatorId,sourceId,q.quote,DIFFICULTY[q.difficulty]||'normal',JSON.stringify({sourceType:q.source_type||'',audioVerified:false,warning:'DRAFT — check attribution, media and rights before publishing',evidence:q.evidence||''}),`draft-v5:quote:${q.id}`]);
       nums[q.category]++;
       await client.query(`INSERT INTO levels(category_slug,quote_id,level_number,initial_reveal_count,reward_coins,is_published)
-        VALUES($1,$2,$3,$4,30,FALSE) ON CONFLICT(quote_id) DO NOTHING`,
-        [q.category,quote.rows[0].id,nums[q.category],q.difficulty==='bonus'?2:3]);
+        VALUES($1,$2,$3,$4,$5,FALSE) ON CONFLICT(quote_id) DO NOTHING`,
+        [q.category,quote.rows[0].id,nums[q.category],q.difficulty==='bonus'?2:3,quoteReward(DIFFICULTY[q.difficulty]||'normal')]);
     }
     await client.query('COMMIT');tx=false;
     console.log('Imported draft-only candidates:',nums);

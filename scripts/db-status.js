@@ -5,7 +5,7 @@ async function status(){
   try {
     const applied=await client.query('SELECT filename,applied_at FROM schema_migrations ORDER BY filename');
     console.log('Applied migrations:',applied.rows);
-    for (const table of ['players','guest_sessions','categories','creators','media_sources','quotes','levels','puzzle_attempts','puzzle_cells','puzzle_notes','cases','case_steps','level_progress','bonus_answers']) {
+    for (const table of ['players','guest_sessions','categories','creators','media_sources','quotes','levels','puzzle_attempts','puzzle_cells','puzzle_notes','cases','case_steps','level_progress','bonus_answers','economy_ledger','puzzle_hint_reveals','puzzle_letter_requests']) {
       // Table names are hardcoded (never user input).
       const {rows}=await client.query(`SELECT COUNT(*)::integer AS total FROM ${table}`);
       console.log(`${table}: ${rows[0].total}`);

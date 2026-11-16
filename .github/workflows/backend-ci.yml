@@ -49,4 +49,5 @@ jobs:
       - run: npm run content:import-drafts
       - run: npm run content:import-drafts # idempotent import
       - run: npm run game:smoke # real PostgreSQL and HTTP integration
+      - run: npm run economy:smoke # atomic rewards, shop, hints and soft lives
       - run: npm run db:status
