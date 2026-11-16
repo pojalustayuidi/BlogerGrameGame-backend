@@ -46,4 +46,7 @@ jobs:
       - run: npm run db:seed # repeat should preserve categories
       - run: npm run db:smoke
       - run: npm run auth:smoke
+      - run: npm run content:import-drafts
+      - run: npm run content:import-drafts # idempotent import
+      - run: npm run game:smoke # real PostgreSQL and HTTP integration
       - run: npm run db:status

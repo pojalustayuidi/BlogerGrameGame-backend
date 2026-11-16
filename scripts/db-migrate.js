@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const {createHash} = require('node:crypto');
+const {checksumForMigration, matchesAppliedChecksum} = require('../lib/migrationChecksum');
 const pool = require('../db'); // requires safe local configuration from stage 01
 
 const folder = path.join(__dirname, '..', 'db', 'migrations');
@@ -13,7 +13,7 @@ async function migrate() {
   try {
     for (const filename of migrations) {
       const source = fs.readFileSync(path.join(folder, filename), 'utf8');
-      const checksum = createHash('sha256').update(source).digest('hex');
+      const checksum = checksumForMigration(source);
       await client.query('BEGIN');
       try {
         // Serialize concurrent migrations before the history table is created.
@@ -25,8 +25,8 @@ async function migrate() {
         )`);
         const {rows} = await client.query('SELECT checksum FROM schema_migrations WHERE filename=$1', [filename]);
         if (rows.length) {
-          if (rows[0].checksum !== checksum) {
-            throw new Error(`Migration ${filename} has changed since applying. Do not edit applied migrations.`);
+          if (!matchesAppliedChecksum(source, rows[0].checksum)) {
+            throw new Error(`Migration ${filename} has changed since applying (other than line endings). Do not edit applied migrations.`);
           }
           await client.query('COMMIT');
           console.log(`[skip] ${filename}`);
